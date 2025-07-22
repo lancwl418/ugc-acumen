@@ -48,5 +48,11 @@ export async function loader() {
 
   // 缓存过期或不存在
   const fresh = await fetchFreshData(visible);
-  return json({ media: fresh });
+  return json({ media: fresh }, {
+    headers: {
+      "Access-Control-Allow-Origin": "*", // 或替换成你的域名
+      "Access-Control-Allow-Methods": "GET, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    },
+  });
 }
