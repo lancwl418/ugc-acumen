@@ -40,7 +40,13 @@ export async function loader() {
 
     if (isFresh) {
       console.log("✅ Using cached UGC data");
-      return json({ media: cache.media });
+      return json({ media: cache.media }, {
+        headers: {
+          "Access-Control-Allow-Origin": "*", // 或替换成你的域名
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type",
+        },
+      });
     }
   } catch (e) {
     console.log("⚠️ No cache or invalid cache, fetching fresh data...");
