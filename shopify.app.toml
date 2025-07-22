@@ -34,4 +34,4 @@ embedded = false
 [app_proxy]
 prefix = "apps"
 subpath = "ugc-acumen"
-url = "https://ugc.acumen-camera.com"
+url = "https://acumen-camera.com"
