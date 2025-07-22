@@ -26,7 +26,7 @@ api_version = "2025-04"
 scopes = "write_products"
 
 [auth]
-redirect_urls = ["https://nh-protest-tender-cams.trycloudflare.com/auth/callback", "https://nh-protest-tender-cams.trycloudflare.com/auth/shopify/callback", "https://nh-protest-tender-cams.trycloudflare.com/api/auth/callback"]
+redirect_urls = ["https://ugc.acumen-camera.com/auth/callback", "https://ugc.acumen-camera.com/auth/shopify/callback", "https://ugc.acumen-camera.com/api/auth/callback"]
 
 [pos]
 embedded = false
