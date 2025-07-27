@@ -3,18 +3,18 @@ import { useLoaderData, Form } from "@remix-run/react";
 import {
   Page,
   Card,
-  Thumbnail,
   Text,
   Checkbox,
   Button,
   Select,
+  OptionList,
+  TextContainer,
 } from "@shopify/polaris";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import fs from "fs/promises";
 import path from "path";
 import { fetchInstagramUGC } from "../lib/fetchInstagram.js";
 import { useFetcher } from "@remix-run/react";
-
 
 const CATEGORY_OPTIONS = [
   { label: "Camping", value: "camping" },
@@ -23,16 +23,25 @@ const CATEGORY_OPTIONS = [
 ];
 
 export async function loader() {
-  // 拉取最新 Instagram 内容，更新 ugc.json
+  // 拉取最新 Instagram 内容
   await fetchInstagramUGC();
 
-  // 读取最新内容和已选中的 visible 内容
+  // 读取最新 UGC 内容
   const ugcRaw = await fs.readFile(path.resolve("public/ugc.json"), "utf-8");
-  const visibleRaw = await fs.readFile(path.resolve("public/visible.json"), "utf-8");
+  const visibleRaw = await fs.readFile(
+    path.resolve("public/visible.json"),
+    "utf-8"
+  );
+  const productRaw = await fs.readFile(
+    path.resolve("public/products.json"),
+    "utf-8"
+  );
 
   const all = JSON.parse(ugcRaw);
   const visible = JSON.parse(visibleRaw);
-  return json({ all, visible });
+  const products = JSON.parse(productRaw); // 产品列表
+
+  return json({ all, visible, products });
 }
 
 export async function action({ request }) {
@@ -47,25 +56,26 @@ export async function action({ request }) {
     "utf-8"
   );
 
-  return json({ ok: true }); // 可选：也可以重定向 redirect("/admin-ugc")
+  return json({ ok: true });
 }
-
 
 export default function AdminUGC() {
   const fetcher = useFetcher();
-
-  const { all, visible } = useLoaderData();
+  const { all, visible, products } = useLoaderData();
 
   const [selected, setSelected] = useState(() => {
     const map = new Map();
-    visible.forEach((entry) => map.set(entry.id, entry.category));
+    visible.forEach((entry) =>
+      map.set(entry.id, { category: entry.category, productHandles: entry.products || [] })
+    );
     return map;
   });
 
   const toggle = (id) => {
     setSelected((prev) => {
       const next = new Map(prev);
-      next.has(id) ? next.delete(id) : next.set(id, "camping");
+      if (next.has(id)) next.delete(id);
+      else next.set(id, { category: "camping", productHandles: [] });
       return next;
     });
   };
@@ -73,22 +83,19 @@ export default function AdminUGC() {
   const changeCategory = (id, category) => {
     setSelected((prev) => {
       const next = new Map(prev);
-      next.set(id, category);
+      const current = next.get(id) || {};
+      next.set(id, { ...current, category });
       return next;
     });
   };
 
-  const fetchProducts = async () => {
-    try {
-      const res = await fetch("/api-products");
-      if (!res.ok) throw new Error("Failed to fetch products");
-      const data = await res.json();
-      console.log("Fetched products:", data);
-      setProducts(data.products || []);
-    } catch (error) {
-      console.error("Error fetching products:", error);
-      setError(error.message);
-    }
+  const changeProducts = (id, productHandles) => {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      const current = next.get(id) || {};
+      next.set(id, { ...current, productHandles });
+      return next;
+    });
   };
 
   return (
@@ -107,7 +114,10 @@ export default function AdminUGC() {
             )
             .map((item) => {
               const isChecked = selected.has(item.id);
-              const category = selected.get(item.id) || "camping";
+              const entry = selected.get(item.id) || {
+                category: "camping",
+                productHandles: [],
+              };
 
               return (
                 <Card key={item.id} padding="400">
@@ -152,15 +162,25 @@ export default function AdminUGC() {
                         <Select
                           label="分类"
                           options={CATEGORY_OPTIONS}
-                          value={category}
+                          value={entry.category}
                           onChange={(value) => changeCategory(item.id, value)}
+                        />
+                        <OptionList
+                          title="关联产品"
+                          onChange={(value) => changeProducts(item.id, value)}
+                          selected={entry.productHandles}
+                          options={products.map((p) => ({
+                            value: p.handle,
+                            label: p.title,
+                          }))}
                         />
                         <input
                           type="hidden"
                           name="ugc_entry"
                           value={JSON.stringify({
                             id: item.id,
-                            category,
+                            category: entry.category,
+                            products: entry.productHandles,
                           })}
                         />
                       </>
@@ -175,22 +195,12 @@ export default function AdminUGC() {
             ✅ 保存展示项
           </Button>
           {fetcher.state === "idle" && fetcher.data?.ok && (
-  <Text variant="bodyMd" tone="success">
-    ✅ 保存成功！
-  </Text>
-)}
+            <Text variant="bodyMd" tone="success">
+              ✅ 保存成功！
+            </Text>
+          )}
         </div>
-        </fetcher.Form>
-        <div>
-      <h1>UGC Admin Page</h1>
-      <button onClick={fetchProducts}>Fetch Active Products</button>
-      {error && <p style={{ color: "red" }}>Error: {error}</p>}
-      <ul>
-        {products.map((p) => (
-          <li key={p.id}>{p.title}</li>
-        ))}
-      </ul>
-    </div>
+      </fetcher.Form>
     </Page>
   );
 }

@@ -1,16 +1,11 @@
 import { json } from "@remix-run/node";
-import shopify from "../shopify.server";
-import prisma from "../db.server";
+import fs from "fs/promises";
+import path from "path";
 
+export async function loader() {
+  const filePath = path.resolve("public/products.json");
+  const rawData = await fs.readFile(filePath, "utf-8");
+  const products = JSON.parse(rawData);
 
-export async function loader({ request }) {
-  
-  try {
-    const sessionCount = await prisma.session.count();
-    console.log("Session count:", sessionCount);
-    return json({ success: true, sessionCount });
-  } catch (err) {
-    console.error("DB Error:", err);
-    return json({ error: "Database connection failed" }, { status: 500 });
-  }
+  return json(products);
 }
