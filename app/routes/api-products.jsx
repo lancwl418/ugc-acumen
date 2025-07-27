@@ -1,29 +1,28 @@
 import { json } from "@remix-run/node";
-import shopify from "../shopify.server"; // 确保引入你的 shopify 实例
+import shopify from "../shopify.server";
 
 export async function loader({ request }) {
   try {
-    // 尝试获取 Shopify session
-    const { session } = await shopify.authenticate.admin(request);
+    console.log(">>> Entering api-products loader");
 
+    const { session } = await shopify.authenticate.admin(request);
     console.log(">>> Shopify session:", session);
 
-    const client = new shopify.api.clients.Rest({ session });
+    if (!session) {
+      throw new Error("Shopify session not found. Possibly not authenticated.");
+    }
 
-    // 尝试获取 active 产品
+    const client = new shopify.api.clients.Rest({ session });
     const response = await client.get({
       path: "products",
       query: { status: "active", limit: 50 },
     });
 
-    console.log(">>> Shopify API Response:", response.body);
+    console.log(">>> Shopify API response:", response.body);
 
     return json({ products: response.body.products || [] });
   } catch (error) {
-    // 输出错误信息到日志
     console.error(">>> Error fetching products:", error);
-
-    // fallback 假数据
     return json(
       {
         products: [
