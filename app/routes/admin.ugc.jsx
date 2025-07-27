@@ -85,9 +85,9 @@ export default function AdminUGC() {
       const data = await res.json();
       console.log("Fetched products:", data);
       setProducts(data.products || []);
-    } catch (err) {
-      console.error("Error fetching products:", err);
-      setError(err.message);
+    } catch (error) {
+      console.error("Error fetching products:", error);
+      setError(error.message);
     }
   };
 
