@@ -1,20 +1,19 @@
 import { json } from "@remix-run/node";
-import { useLoaderData, Form } from "@remix-run/react";
+import { useLoaderData, Form, useFetcher } from "@remix-run/react";
 import {
   Page,
   Card,
+  Thumbnail,
   Text,
   Checkbox,
   Button,
   Select,
-  OptionList,
-  TextContainer,
+  Tag,
 } from "@shopify/polaris";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import fs from "fs/promises";
 import path from "path";
 import { fetchInstagramUGC } from "../lib/fetchInstagram.js";
-import { useFetcher } from "@remix-run/react";
 
 const CATEGORY_OPTIONS = [
   { label: "Camping", value: "camping" },
@@ -26,20 +25,13 @@ export async function loader() {
   // 拉取最新 Instagram 内容
   await fetchInstagramUGC();
 
-  // 读取最新 UGC 内容
   const ugcRaw = await fs.readFile(path.resolve("public/ugc.json"), "utf-8");
-  const visibleRaw = await fs.readFile(
-    path.resolve("public/visible.json"),
-    "utf-8"
-  );
-  const productRaw = await fs.readFile(
-    path.resolve("public/products.json"),
-    "utf-8"
-  );
+  const visibleRaw = await fs.readFile(path.resolve("public/visible.json"), "utf-8");
+  const productsRaw = await fs.readFile(path.resolve("public/products.json"), "utf-8");
 
   const all = JSON.parse(ugcRaw);
   const visible = JSON.parse(visibleRaw);
-  const products = JSON.parse(productRaw); // 产品列表
+  const products = JSON.parse(productsRaw);
 
   return json({ all, visible, products });
 }
@@ -49,7 +41,6 @@ export async function action({ request }) {
   const entries = form.getAll("ugc_entry");
   const parsed = entries.map((entry) => JSON.parse(entry));
 
-  // 保存 visible.json
   await fs.writeFile(
     path.resolve("public/visible.json"),
     JSON.stringify(parsed, null, 2),
@@ -65,9 +56,7 @@ export default function AdminUGC() {
 
   const [selected, setSelected] = useState(() => {
     const map = new Map();
-    visible.forEach((entry) =>
-      map.set(entry.id, { category: entry.category, productHandles: entry.products || [] })
-    );
+    visible.forEach((entry) => map.set(entry.id, entry));
     return map;
   });
 
@@ -75,7 +64,7 @@ export default function AdminUGC() {
     setSelected((prev) => {
       const next = new Map(prev);
       if (next.has(id)) next.delete(id);
-      else next.set(id, { category: "camping", productHandles: [] });
+      else next.set(id, { category: "camping", products: [] });
       return next;
     });
   };
@@ -83,17 +72,15 @@ export default function AdminUGC() {
   const changeCategory = (id, category) => {
     setSelected((prev) => {
       const next = new Map(prev);
-      const current = next.get(id) || {};
-      next.set(id, { ...current, category });
+      if (next.has(id)) next.get(id).category = category;
       return next;
     });
   };
 
-  const changeProducts = (id, productHandles) => {
+  const changeProducts = (id, value) => {
     setSelected((prev) => {
       const next = new Map(prev);
-      const current = next.get(id) || {};
-      next.set(id, { ...current, productHandles });
+      if (next.has(id)) next.get(id).products = value;
       return next;
     });
   };
@@ -113,11 +100,10 @@ export default function AdminUGC() {
               (b.timestamp || "").localeCompare(a.timestamp || "")
             )
             .map((item) => {
-              const isChecked = selected.has(item.id);
-              const entry = selected.get(item.id) || {
-                category: "camping",
-                productHandles: [],
-              };
+              const entry = selected.get(item.id);
+              const isChecked = !!entry;
+              const category = entry?.category || "camping";
+              const selectedProducts = entry?.products || [];
 
               return (
                 <Card key={item.id} padding="400">
@@ -162,25 +148,25 @@ export default function AdminUGC() {
                         <Select
                           label="分类"
                           options={CATEGORY_OPTIONS}
-                          value={entry.category}
+                          value={category}
                           onChange={(value) => changeCategory(item.id, value)}
                         />
-                        <OptionList
-                          title="关联产品"
-                          onChange={(value) => changeProducts(item.id, value)}
-                          selected={entry.productHandles}
+                        <Select
+                          label="关联产品"
                           options={products.map((p) => ({
-                            value: p.handle,
                             label: p.title,
+                            value: p.handle,
                           }))}
+                          value={selectedProducts}
+                          onChange={(value) => changeProducts(item.id, [value])}
                         />
                         <input
                           type="hidden"
                           name="ugc_entry"
                           value={JSON.stringify({
                             id: item.id,
-                            category: entry.category,
-                            products: entry.productHandles,
+                            category,
+                            products: selectedProducts,
                           })}
                         />
                       </>
