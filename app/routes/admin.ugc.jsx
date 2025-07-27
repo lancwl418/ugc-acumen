@@ -78,6 +78,19 @@ export default function AdminUGC() {
     });
   };
 
+  const fetchProducts = async () => {
+    try {
+      const res = await fetch("/api-products");
+      if (!res.ok) throw new Error("Failed to fetch products");
+      const data = await res.json();
+      console.log("Fetched products:", data);
+      setProducts(data.products || []);
+    } catch (err) {
+      console.error("Error fetching products:", err);
+      setError(err.message);
+    }
+  };
+
   return (
     <Page title="📸 UGC 内容管理">
       <fetcher.Form method="post">
@@ -168,6 +181,16 @@ export default function AdminUGC() {
 )}
         </div>
         </fetcher.Form>
+        <div>
+      <h1>UGC Admin Page</h1>
+      <button onClick={fetchProducts}>Fetch Active Products</button>
+      {error && <p style={{ color: "red" }}>Error: {error}</p>}
+      <ul>
+        {products.map((p) => (
+          <li key={p.id}>{p.title}</li>
+        ))}
+      </ul>
+    </div>
     </Page>
   );
 }
