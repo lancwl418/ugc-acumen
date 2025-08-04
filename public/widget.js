@@ -225,7 +225,7 @@
 
   Promise.all([
     fetch("https://ugc.acumen-camera.com/api/ugc-media").then((res) => res.json()),
-    fetch("https://ugc.acumen-camera.com/products.json").then((res) => res.json()),
+    fetch("https://ugc.acumen-camera.com/api-products").then((res) => res.json()),
   ])
     .then(([ugcData, productData]) => {
       const productMap = {};
