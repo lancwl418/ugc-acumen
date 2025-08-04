@@ -192,7 +192,10 @@
             })
             .join("")
         : "<p>No related products.</p>";
-
+    
+   console.log("Rendering modal for:", item);
+  console.log("Generated productHTML:", productHTML);
+    
     modal.innerHTML = `
       <div class="acumen-modal-content">
         <span class="acumen-modal-close">&times;</span>
