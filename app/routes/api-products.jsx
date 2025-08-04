@@ -7,5 +7,11 @@ export async function loader() {
   const rawData = await fs.readFile(filePath, "utf-8");
   const products = JSON.parse(rawData);
 
-  return json(products);
+  return json({ products }, {
+  headers: {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+  }
+  });
 }
