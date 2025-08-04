@@ -13,7 +13,13 @@ async function fetchFreshData(visible) {
       const res = await fetch(
         `https://graph.facebook.com/v23.0/${entry.id}?fields=id,media_url,permalink,caption,media_type,timestamp&access_token=${token}`
       );
-      return res.json();
+      const data = await res.json();
+      // 合并 category 和 products
+      return {
+        ...data,
+        category: entry.category || null,
+        products: entry.products || [],
+      };
     })
   );
 
@@ -32,21 +38,33 @@ export async function loader() {
   const visibleRaw = await fs.readFile(visiblePath, "utf-8");
   const visible = JSON.parse(visibleRaw);
 
-  // 检查缓存
   try {
     const cacheRaw = await fs.readFile(CACHE_FILE, "utf-8");
     const cache = JSON.parse(cacheRaw);
-    const isFresh = Date.now() - new Date(cache.lastFetch).getTime() < CACHE_TTL;
+    const isFresh =
+      Date.now() - new Date(cache.lastFetch).getTime() < CACHE_TTL;
 
     if (isFresh) {
       console.log("✅ Using cached UGC data");
-      return json({ media: cache.media }, {
-        headers: {
-          "Access-Control-Allow-Origin": "*", // 或替换成你的域名
-          "Access-Control-Allow-Methods": "GET, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type",
-        },
+      // 把 visible 的 category/products 合并到缓存 media
+      const merged = cache.media.map((item) => {
+        const extra = visible.find((v) => v.id === item.id);
+        return {
+          ...item,
+          category: extra?.category || null,
+          products: extra?.products || [],
+        };
       });
+      return json(
+        { media: merged },
+        {
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+          }
+        }
+      );
     }
   } catch (e) {
     console.log("⚠️ No cache or invalid cache, fetching fresh data...");
@@ -54,11 +72,14 @@ export async function loader() {
 
   // 缓存过期或不存在
   const fresh = await fetchFreshData(visible);
-  return json({ media: fresh }, {
-    headers: {
-      "Access-Control-Allow-Origin": "*", // 或替换成你的域名
-      "Access-Control-Allow-Methods": "GET, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    },
-  });
+  return json(
+    { media: fresh },
+    {
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      }
+    }
+  );
 }
