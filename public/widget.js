@@ -164,11 +164,15 @@
       });
     }, 200);
 
-    container.querySelectorAll(".view-post").forEach((btn, idx) => {
-      btn.addEventListener("click", () =>
-        showModal(mediaItems[idx], productMap)
-      );
-    });
+    container.querySelectorAll(".swiper-slide").forEach((slide, idx) => {
+  const mediaArea = slide.querySelector(".acumen-ugc-media");
+  const viewBtn = slide.querySelector(".view-post");
+
+  const openModal = () => showModal(mediaItems[idx], productMap);
+
+  if (mediaArea) mediaArea.addEventListener("click", openModal);
+  if (viewBtn) viewBtn.addEventListener("click", openModal);
+});
   }
 
   function showModal(item, productMap) {
