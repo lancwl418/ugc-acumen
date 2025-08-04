@@ -1,5 +1,4 @@
 (function () {
-  // 注入基础样式
   const style = document.createElement("style");
   style.innerHTML = `
     .acumen-ugc-container { padding: 2rem; font-family: Arial, sans-serif; }
@@ -35,7 +34,7 @@
       object-fit: cover;
     }
 
-    /* 弹窗 */
+    /* 弹窗背景 */
     .acumen-modal {
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
@@ -45,25 +44,30 @@
       align-items: center;
       z-index: 9999;
     }
+
+    /* 弹窗主体 */
     .acumen-modal-content {
       position: relative;
       background: #fff;
       border-radius: 8px;
       padding: 24px;
-      max-width: 80vw;
-      max-height: 80vh;
-      overflow-y: auto;
       display: flex;
       gap: 24px;
+      max-width: 800px;
+      max-height: 80vh;
+      overflow-y: auto;
     }
+
+    /* 弹窗里的图片和视频固定宽度 */
     .acumen-modal-content img,
     .acumen-modal-content video {
-      max-width: 400px;
-      height: auto;
+      width: 320px;
+      max-height: 400px;
+      object-fit: contain;
       border-radius: 6px;
-      display: block;
-      margin: 0 auto;
     }
+
+    /* 右侧信息区 */
     .acumen-modal-right {
       flex: 1;
       display: flex;
@@ -74,12 +78,13 @@
     /* 关闭按钮 */
     .acumen-modal-close {
       position: absolute;
-      top: 12px;
-      right: 16px;
-      font-size: 22px;
+      top: 8px;
+      right: 12px;
+      font-size: 28px;
       font-weight: bold;
       color: #333;
       cursor: pointer;
+      line-height: 1;
     }
     .acumen-modal-close:hover {
       color: red;
@@ -191,7 +196,7 @@
     modal.innerHTML = `
       <div class="acumen-modal-content">
         <span class="acumen-modal-close">&times;</span>
-        <div style="flex: 1;">
+        <div>
           ${
             item.media_type === "VIDEO"
               ? `<video controls><source src="${item.media_url}" type="video/mp4"></video>`
