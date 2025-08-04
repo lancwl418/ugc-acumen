@@ -3,7 +3,6 @@
   const style = document.createElement("style");
   style.innerHTML = `
     .acumen-ugc-container { padding: 2rem; font-family: Arial, sans-serif; }
-    .acumen-ugc-container h2 { font-size: 1.5rem; margin-bottom: 1rem; }
     .acumen-ugc-slide p {
       margin: 0;
       font-size: 14px;
@@ -35,6 +34,8 @@
       height: 100%;
       object-fit: cover;
     }
+
+    /* 弹窗 */
     .acumen-modal {
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
@@ -45,19 +46,23 @@
       z-index: 9999;
     }
     .acumen-modal-content {
+      position: relative;
       background: #fff;
       border-radius: 8px;
       padding: 24px;
-      max-width: 90vw;
-      max-height: 90vh;
+      max-width: 80vw;
+      max-height: 80vh;
       overflow-y: auto;
       display: flex;
       gap: 24px;
     }
     .acumen-modal-content img,
     .acumen-modal-content video {
-      max-width: 100%;
+      max-width: 400px;
       height: auto;
+      border-radius: 6px;
+      display: block;
+      margin: 0 auto;
     }
     .acumen-modal-right {
       flex: 1;
@@ -65,22 +70,22 @@
       flex-direction: column;
       gap: 16px;
     }
-    .acumen-ugc-container .swiper-pagination-bullet {
-      width: 12px;
-      height: 12px;
-      background: #000;
-      opacity: 0.7;
-      margin: 0 8px !important;
+
+    /* 关闭按钮 */
+    .acumen-modal-close {
+      position: absolute;
+      top: 12px;
+      right: 16px;
+      font-size: 22px;
+      font-weight: bold;
+      color: #333;
+      cursor: pointer;
     }
-    .acumen-ugc-container .swiper-pagination-bullet-active {
-      background: #007bff;
-      opacity: 1;
+    .acumen-modal-close:hover {
+      color: red;
     }
-    .acumen-ugc-container .swiper-pagination {
-      position: relative;
-      margin-top: 10px;
-      text-align: center;
-    }
+
+    /* 产品卡片 */
     .ugc-product-card {
       display: flex;
       align-items: center;
@@ -103,7 +108,6 @@
   `;
   document.head.appendChild(style);
 
-  // 渲染 Slider
   function renderSlider(mediaItems, productMap) {
     const container = document.getElementById("acumen-ugc-widget");
     if (!container) return;
@@ -137,7 +141,6 @@
       </div>
     `;
 
-    // 初始化 Swiper
     setTimeout(() => {
       new Swiper(".swiper", {
         loop: true,
@@ -156,7 +159,6 @@
       });
     }, 200);
 
-    // 绑定 modal 打开
     container.querySelectorAll(".view-post").forEach((btn, idx) => {
       btn.addEventListener("click", () =>
         showModal(mediaItems[idx], productMap)
@@ -164,12 +166,10 @@
     });
   }
 
-  // 显示 Modal + 产品
   function showModal(item, productMap) {
     const modal = document.createElement("div");
     modal.className = "acumen-modal";
 
-    // 渲染产品卡片
     const productHTML =
       item.products && item.products.length
         ? item.products
@@ -190,6 +190,7 @@
 
     modal.innerHTML = `
       <div class="acumen-modal-content">
+        <span class="acumen-modal-close">&times;</span>
         <div style="flex: 1;">
           ${
             item.media_type === "VIDEO"
@@ -205,13 +206,15 @@
         </div>
       </div>
     `;
+
+    modal.querySelector(".acumen-modal-close").addEventListener("click", () => modal.remove());
     modal.addEventListener("click", (e) => {
       if (e.target === modal) modal.remove();
     });
+
     document.body.appendChild(modal);
   }
 
-  // 获取数据：UGC + 产品
   Promise.all([
     fetch("https://ugc.acumen-camera.com/api/ugc-media").then((res) => res.json()),
     fetch("https://ugc.acumen-camera.com/products.json").then((res) => res.json()),
