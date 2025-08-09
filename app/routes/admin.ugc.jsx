@@ -13,6 +13,7 @@ import {
 import { useState } from "react";
 import fs from "fs/promises";
 import path from "path";
+import { VISIBLE_PATH, ensureVisibleFile } from "../lib/persistPaths";
 import { fetchInstagramUGC } from "../lib/fetchInstagram.js";
 
 const CATEGORY_OPTIONS = [
@@ -26,7 +27,9 @@ export async function loader() {
   await fetchInstagramUGC();
 
   const ugcRaw = await fs.readFile(path.resolve("public/ugc.json"), "utf-8");
-  const visibleRaw = await fs.readFile(path.resolve("public/visible.json"), "utf-8");
+  // 确保 /data/visible.json 存在（不存在则用 public/visible.json 初始化）
+  await ensureVisibleFile();
+  const visibleRaw = await fs.readFile(VISIBLE_PATH, "utf-8");
   const productsRaw = await fs.readFile(path.resolve("public/products.json"), "utf-8");
 
   const all = JSON.parse(ugcRaw);
@@ -41,11 +44,7 @@ export async function action({ request }) {
   const entries = form.getAll("ugc_entry");
   const parsed = entries.map((entry) => JSON.parse(entry));
 
-  await fs.writeFile(
-    path.resolve("public/visible.json"),
-    JSON.stringify(parsed, null, 2),
-    "utf-8"
-  );
+  await fs.writeFile(VISIBLE_PATH, JSON.stringify(parsed, null, 2), "utf-8");
 
   return json({ ok: true });
 }
