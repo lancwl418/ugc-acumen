@@ -189,6 +189,7 @@
                      <img src="${p.image}" alt="${p.title}" />
                      <div>
                        <div>${p.title}</div>
+                       <p style="color:#d45a20;">$${p.price}</p>
                        <a href="${p.link}" target="_blank">View More</a>
                      </div>
                    </div>`
