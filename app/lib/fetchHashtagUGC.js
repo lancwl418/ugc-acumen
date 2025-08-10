@@ -1,6 +1,7 @@
 // app/lib/fetchHashtagUGC.js
 import fs from "fs/promises";
 import fetch from "node-fetch";
+import path from "path";
 
 // 新增：原子写工具
 async function atomicWrite(file, data) {
