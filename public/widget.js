@@ -212,10 +212,10 @@
           }
         </div>
         <div class="acumen-modal-right">
-          <p><strong>@acumencamera</strong>: ${item.caption || "No caption."}</p>
-          <a href="${item.permalink}" target="_blank" style="color:#007bff; text-decoration:underline;">View original post</a>
           <h4>Related Products</h4>
           ${productHTML}
+          <p><strong>@acumencamera</strong>: ${item.caption || "No caption."}</p>
+          <a href="${item.permalink}" target="_blank" style="color:#007bff; text-decoration:underline;">View original post</a>
         </div>
       </div>
     `;
