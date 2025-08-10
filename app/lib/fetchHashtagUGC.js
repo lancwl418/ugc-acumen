@@ -2,6 +2,14 @@
 import fs from "fs/promises";
 import fetch from "node-fetch";
 
+// 新增：原子写工具
+async function atomicWrite(file, data) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  await fs.writeFile(tmp, data, "utf-8");
+  await fs.rename(tmp, file); // rename 是原子的
+}
+
 /**
  * 环境变量（Render 上配置）：
  * - PAGE_TOKEN        长效 Page Access Token
@@ -131,8 +139,8 @@ export async function fetchHashtagUGC({
         media_type: item.media_type,
         hashtag: tag,
       }));
-
-    await fs.writeFile(outfile, JSON.stringify(normalized, null, 2), "utf-8");
+    const payload = JSON.stringify(normalized, null, 2);
+    await atomicWrite(outfile, payload);   // ← 用原子写替换 writeFile
     console.log(`✅ 已抓取 #${tag} 共 ${normalized.length} 条（strategy=${strategy}）`);
   } catch (err) {
     console.error("❌ fetchHashtagUGC 出错：", err);
