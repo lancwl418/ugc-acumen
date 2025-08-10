@@ -1,3 +1,4 @@
+// app/routes/admin.hashtagUGC.jsx
 import { json } from "@remix-run/node";
 import { useLoaderData, useFetcher } from "@remix-run/react";
 import {
@@ -12,44 +13,64 @@ import {
 import { useState } from "react";
 import fs from "fs/promises";
 import path from "path";
+
 import {
   VISIBLE_HASHTAG_PATH,
   ensureVisibleHashtagFile,
 } from "../lib/persistPaths.js";
 import { fetchHashtagUGC } from "../lib/fetchHashtagUGC.js";
 
+/* ----------------- 配置：分类选项 ----------------- */
 const CATEGORY_OPTIONS = [
   { label: "Camping", value: "camping" },
   { label: "Off-Road", value: "off-road" },
   { label: "Travel", value: "travel" },
 ];
 
+/* ----------------- 工具：容错读取 JSON（带重试/兜底） ----------------- */
+async function readJsonSafe(file, fallback = "[]", retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const raw = await fs.readFile(file, "utf-8");
+      if (!raw || !raw.trim()) throw new Error("empty json file");
+      return JSON.parse(raw);
+    } catch (e) {
+      if (i === retries - 1) {
+        console.warn(`⚠️ 读取 ${file} 失败，使用兜底：`, e.message);
+        try {
+          return JSON.parse(fallback);
+        } catch {
+          return [];
+        }
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  return [];
+}
+
+/* ----------------- Loader：抓取并读取数据 ----------------- */
 export async function loader() {
-  // 抓取最新的 Hashtag UGC（你可按需设定 strategy/limit）
+  // 1) 抓最新 hashtag 内容（可改成 "both" 或 "recent"）
   await fetchHashtagUGC({ strategy: "top", limit: 120 });
 
-  const ugcRaw = await fs.readFile(
-    path.resolve("public/hashtag_ugc.json"),
-    "utf-8"
-  );
+  // 2) 读取抓取结果（容错）
+  const all = await readJsonSafe(path.resolve("public/hashtag_ugc.json"));
 
-  // 确保 /data/visible_hashtag.json 存在（不存在用 public/visible_hashtag.json 初始化）
+  // 3) 确保 /data/visible_hashtag.json 存在，并读取（容错）
   await ensureVisibleHashtagFile();
-  const visibleRaw = await fs.readFile(VISIBLE_HASHTAG_PATH, "utf-8");
+  const visible = await readJsonSafe(VISIBLE_HASHTAG_PATH);
 
-  // 产品列表（沿用你原有的 products.json）
-  const productsRaw = await fs.readFile(
+  // 4) 产品列表（与 admin.ugc.jsx 一致）
+  const products = await readJsonSafe(
     path.resolve("public/products.json"),
-    "utf-8"
+    "[]"
   );
-
-  const all = JSON.parse(ugcRaw);
-  const visible = JSON.parse(visibleRaw);
-  const products = JSON.parse(productsRaw);
 
   return json({ all, visible, products });
 }
 
+/* ----------------- Action：保存选中可见项 ----------------- */
 export async function action({ request }) {
   const form = await request.formData();
   const entries = form.getAll("ugc_entry");
@@ -64,6 +85,7 @@ export async function action({ request }) {
   return json({ ok: true });
 }
 
+/* ----------------- 页面组件 ----------------- */
 export default function AdminHashtagUGC() {
   const fetcher = useFetcher();
   const { all, visible, products } = useLoaderData();
@@ -119,7 +141,6 @@ export default function AdminHashtagUGC() {
               const isChecked = !!entry;
               const category = entry?.category || "camping";
               const selectedProducts = entry?.products || [];
-
               const isVideo = item.media_type === "VIDEO";
 
               return (
@@ -128,7 +149,9 @@ export default function AdminHashtagUGC() {
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                       <Tag>#{item.hashtag || process.env.HASHTAG || "hashtag"}</Tag>
                       <Text as="span" variant="bodySm" tone="subdued">
-                        {new Date(item.timestamp).toLocaleString()}
+                        {item.timestamp
+                          ? new Date(item.timestamp).toLocaleString()
+                          : ""}
                       </Text>
                     </div>
 
@@ -220,4 +243,3 @@ export default function AdminHashtagUGC() {
     </Page>
   );
 }
-
