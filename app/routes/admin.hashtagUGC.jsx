@@ -22,9 +22,12 @@ import { fetchHashtagUGC } from "../lib/fetchHashtagUGC.js";
 
 /* ----------------- 配置：分类选项 ----------------- */
 const CATEGORY_OPTIONS = [
-  { label: "Camping", value: "camping" },
+  { label: "Camping Life", value: "camping" },
   { label: "Off-Road", value: "off-road" },
-  { label: "Travel", value: "travel" },
+  { label: "Electronics & Gadgets", value: "electronic" },
+  { label: "Towing & Trailers", value: "travel" },
+  { label: "Documentation", value: "documentation" },
+  { label: "Events", value: "events" }
 ];
 
 /* ----------------- 工具：容错读取 JSON（带重试/兜底） ----------------- */
