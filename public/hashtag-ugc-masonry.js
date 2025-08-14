@@ -1,4 +1,19 @@
 (function () {
+    /* ====================== 读取 API 基础域 ====================== */
+    function getApiBase() {
+      const me =
+        document.currentScript ||
+        document.getElementById("acumen-hashtag-ugc") ||
+        document.querySelector('script[src*="hashtag-ugc-masonry"]');
+      const base =
+        (me && me.getAttribute("data-api-base")) ||
+        "https://ugc.acumen-camera.com";
+      return base.replace(/\/+$/, "");
+    }
+    const API_BASE = getApiBase();
+    const HASHTAG_API = `${API_BASE}/api/hashtag-ugc`;
+    const PRODUCTS_API = `${API_BASE}/api-products`;
+  
     /* ====================== 样式（Masonry + 卡片 + Modal） ====================== */
     const style = document.createElement("style");
     style.innerHTML = `
@@ -115,15 +130,6 @@
       .ugc-product-card a {
         color:#0a66c2; font-size:13px; text-decoration: underline;
       }
-  
-      /* 简易占位骨架 */
-      .acumen-skeleton {
-        height: 12px; background: #eee; border-radius: 6px; margin: 6px 0;
-        animation: acumen-skeleton 1.2s infinite linear;
-      }
-      @keyframes acumen-skeleton {
-        0% { opacity: .6; } 50% { opacity: 1; } 100% { opacity: .6; }
-      }
     `;
     document.head.appendChild(style);
   
@@ -183,13 +189,13 @@
       document.body.appendChild(modal);
     }
   
-    /* ====================== 渲染单个 Masonry 容器（分页请求） ====================== */
+    /* ====================== 渲染单个 Masonry 容器（分页） ====================== */
     function bootMasonryContainer(container, productMap) {
       const category = (container.getAttribute("data-category") || "").trim();
       if (!category) return;
   
-      const endpoint = container.getAttribute("data-endpoint") || "/api/hashtag-ugc";
-      const productsEndpoint = container.getAttribute("data-products") || "/api-products";
+      const endpoint = container.getAttribute("data-endpoint") || HASHTAG_API;
+      const productsEndpoint = container.getAttribute("data-products") || PRODUCTS_API;
       const initial = Number(container.getAttribute("data-initial") || 24);
       const step = Number(container.getAttribute("data-step") || 12);
   
@@ -199,22 +205,25 @@
           <button class="acumen-loadmore-btn" type="button">Load more</button>
         </div>
       `;
-  
-      const grid = $(".acumen-masonry", container);
-      const loadBtn = $(".acumen-loadmore-btn", container);
+      const grid = container.querySelector(".acumen-masonry");
+      const loadBtn = container.querySelector(".acumen-loadmore-btn");
   
       let offset = 0;
-      let total = Infinity; // 后端会返回真实 total
+      let total = Infinity;
       let isLoading = false;
   
       async function fetchPage(limit, off) {
-        const url = new URL(endpoint, window.location.origin);
+        const url = new URL(endpoint);
         url.searchParams.set("category", category);
         url.searchParams.set("limit", String(limit));
         url.searchParams.set("offset", String(off));
         const res = await fetch(url.toString(), { credentials: "omit" });
-        if (!res.ok) throw new Error("Fetch hashtag-ugc failed");
-        return res.json(); // { media: [], total: N }
+        const ct = res.headers.get("content-type") || "";
+        if (!res.ok || !ct.includes("application/json")) {
+          const text = await res.text();
+          throw new Error(`Fetch hashtag-ugc failed: ${res.status} ${text.slice(0,120)}`);
+        }
+        return res.json(); // { media, total }
       }
   
       function renderItems(items) {
@@ -239,7 +248,6 @@
         }).join("");
         grid.insertAdjacentHTML("beforeend", html);
   
-        // 绑定事件
         items.forEach((item) => {
           const card = grid.querySelector(`.acumen-ugc-card[data-id="${item.id}"]`);
           const view = card?.querySelector(".acumen-view");
@@ -284,23 +292,28 @@
       }
   
       loadBtn.addEventListener("click", () => loadMore(false));
-      loadMore(true); // 首次加载
+      loadMore(true);
     }
   
-    /* ====================== 启动：加载产品，初始化所有容器 ====================== */
+    /* ====================== 启动：加载产品、初始化所有容器 ====================== */
     async function init() {
-      // 先取一次产品数据（handle -> product）
       let productMap = {};
       try {
-        const res = await fetch("/api-products");
+        const res = await fetch(PRODUCTS_API);
+        const ct = res.headers.get("content-type") || "";
+        if (!res.ok || !ct.includes("application/json")) {
+          const text = await res.text();
+          throw new Error(`Unexpected response: ${res.status} ${text.slice(0,120)}`);
+        }
         const data = await res.json();
         (data.products || []).forEach((p) => { productMap[p.handle] = p; });
       } catch (e) {
         console.warn("[Hashtag UGC] load products failed:", e);
       }
   
-      const containers = document.querySelectorAll(".acumen-hashtag-ugc[data-category]");
-      containers.forEach((el) => bootMasonryContainer(el, productMap));
+      document
+        .querySelectorAll(".acumen-hashtag-ugc[data-category]")
+        .forEach((el) => bootMasonryContainer(el, productMap));
     }
   
     if (document.readyState === "loading") {
