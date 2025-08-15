@@ -29,7 +29,7 @@ async function readJsonSafe(file, fallback = "[]", retries = 2) {
   return [];
 }
 
-/** 并发控制：以 concurrency 个同时跑 */
+/** 并发控制（避免触发 Graph 限流） */
 async function mapWithConcurrency(list, concurrency, mapper) {
   const result = new Array(list.length);
   let idx = 0;
@@ -40,7 +40,6 @@ async function mapWithConcurrency(list, concurrency, mapper) {
       try {
         result[cur] = await mapper(list[cur], cur);
       } catch (e) {
-        // 出错时用 null 占位，稍后 filter 掉
         result[cur] = null;
       }
     }
@@ -58,44 +57,48 @@ export async function loader({ request }) {
   if (!token) {
     return json(
       { error: "Missing INSTAGRAM_ACCESS_TOKEN" },
-      { status: 500 }
+      {
+        status: 500,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type",
+        },
+      }
     );
   }
 
-  // 允许：?category=camping&limit=24&offset=0
   const url = new URL(request.url);
   const filterCategory = url.searchParams.get("category");
   const limit = Number(url.searchParams.get("limit") || 0);
   const offset = Number(url.searchParams.get("offset") || 0);
 
-  // 1) 读可见清单（含 category/products）
+  // 1) 读可见清单
   await ensureVisibleHashtagFile();
   const visible = await readJsonSafe(VISIBLE_HASHTAG_PATH, "[]");
 
-  // 2) 可选 category 过滤（先按可见列表过滤，减少后续 Graph 调用）
+  // 2) 可选分类过滤
   let toFetch = filterCategory
     ? visible.filter((v) => v.category === filterCategory)
     : visible.slice();
 
-  // 3) 排序（按保存顺序 or timestamp 无法在这里拿到，后面拿到数据后再按 timestamp 排）
-  // 先做分页裁切，以减少 Graph 调用次数
+  // 3) 先分页裁切，减少 Graph 调用
   const total = toFetch.length;
   if (limit > 0) {
     toFetch = toFetch.slice(offset, offset + limit);
   }
 
-  // 4) 实时拉取 Graph（拿当前 media_url）
+  // 4) 实时拉 Graph（拿当前 media_url）
   const fields =
     "id,media_url,permalink,caption,media_type,timestamp,thumbnail_url";
+  const concurrency = 6;
 
-  const concurrency = 6; // 并发安全值，避免触发限流
   const results = await mapWithConcurrency(toFetch, concurrency, async (entry) => {
     const res = await fetch(
       `https://graph.facebook.com/v23.0/${entry.id}?fields=${fields}&access_token=${token}`
     );
     const data = await res.json();
 
-    // Graph 错误时跳过
     if (!data || data.error) return null;
 
     return {
@@ -105,10 +108,8 @@ export async function loader({ request }) {
       caption: data.caption || "",
       permalink: data.permalink,
       timestamp: data.timestamp || "",
-      // 加上保存的可见配置
       category: entry.category || null,
       products: entry.products || [],
-      // 有需要也可暴露 thumbnail_url
       thumbnail_url: data.thumbnail_url || null,
     };
   });
@@ -120,10 +121,12 @@ export async function loader({ request }) {
     { media: results, total },
     {
       headers: {
+        // ✅ 一致的 CORS 头
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
-        "Cache-Control": "public, max-age=60", // 轻缓存 60 秒
+        // 轻缓存，减轻压力
+        "Cache-Control": "public, max-age=60",
       },
     }
   );
