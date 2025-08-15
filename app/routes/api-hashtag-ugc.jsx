@@ -6,7 +6,7 @@ import {
   ensureVisibleHashtagFile,
 } from "../lib/persistPaths.js";
 
-const token = process.env.INSTAGRAM_ACCESS_TOKEN;
+const token = process.env.PAGE_TOKEN;
 
 // 读取 JSON（容错空文件/半包）
 async function readJsonSafe(file, fallback = "[]", retries = 2) {

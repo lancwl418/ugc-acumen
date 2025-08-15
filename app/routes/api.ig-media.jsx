@@ -6,7 +6,7 @@ export async function loader({ request }) {
   const id = url.searchParams.get("id");
   if (!id) return new Response("Missing id", { status: 400 });
 
-  const token = process.env.INSTAGRAM_ACCESS_TOKEN;
+  const token = process.env.PAGE_TOKEN;
 
   const r = await fetch(
     `https://graph.facebook.com/v23.0/${id}?fields=media_url,thumbnail_url,media_type&access_token=${token}`,
