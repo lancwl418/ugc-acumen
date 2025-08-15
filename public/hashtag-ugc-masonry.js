@@ -58,7 +58,7 @@
   async function fetchPage(apiBase, category, limit, offset) {
     // ✅ 路径使用 “点” 路由
     const url =
-      `${apiBase}/api.hashtag-ugc?category=${encodeURIComponent(category)}&limit=${limit}&offset=${offset}`;
+      `${apiBase}/api-hashtag-ugc?category=${encodeURIComponent(category)}&limit=${limit}&offset=${offset}`;
     const res = await fetch(url, { mode: "cors" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
