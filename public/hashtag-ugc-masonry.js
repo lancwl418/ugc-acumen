@@ -1,325 +1,337 @@
+/**
+ * Hashtag UGC Masonry (no deps)
+ * - 容器匹配：页面上的 [data-ugc-cat="<category>"] 容器
+ * - API：
+ *    GET  {API_BASE}/api.hashtag-ugc?category=camping&limit=24&offset=0
+ *    GET  {API_BASE}/api-products
+ *    GET  {API_BASE}/api/ig-media?id=<media_id>   // 代理媒体，避免 403
+ */
 (function () {
-    /* ====================== 读取 API 基础域 ====================== */
-    function getApiBase() {
-      const me =
-        document.currentScript ||
-        document.getElementById("acumen-hashtag-ugc") ||
-        document.querySelector('script[src*="hashtag-ugc-masonry"]');
-      const base =
-        (me && me.getAttribute("data-api-base")) ||
-        "https://ugc.acumen-camera.com";
-      return base.replace(/\/+$/, "");
+  const SCRIPT = document.getElementById("acumen-hashtag-ugc");
+  const API_BASE =
+    (SCRIPT && SCRIPT.getAttribute("data-api-base")) ||
+    "https://ugc.acumen-camera.com";
+  const PAGE_SIZE = Number(SCRIPT?.getAttribute("data-limit") || 24);
+
+  // --- 样式 ---
+  const style = document.createElement("style");
+  style.innerHTML = `
+    /* 容器（每个分类一个容器） */
+    .acumen-ugc-grid {
+      column-gap: 16px;
     }
-    const API_BASE = getApiBase();
-    const HASHTAG_API = `${API_BASE}/api/hashtag-ugc`;
-    const PRODUCTS_API = `${API_BASE}/api-products`;
-  
-    /* ====================== 样式（Masonry + 卡片 + Modal） ====================== */
-    const style = document.createElement("style");
-    style.innerHTML = `
-      .acumen-masonry {
-        column-count: 4;
-        column-gap: 16px;
-      }
-      @media (max-width: 1280px) { .acumen-masonry { column-count: 3; } }
-      @media (max-width: 1024px) { .acumen-masonry { column-count: 2; } }
-      @media (max-width: 640px)  { .acumen-masonry { column-count: 1; } }
-  
-      .acumen-ugc-card {
-        break-inside: avoid;
-        background: #fff;
-        border: 1px solid #eee;
-        border-radius: 10px;
-        margin: 0 0 16px;
-        overflow: hidden;
-        box-shadow: 0 2px 8px rgba(0,0,0,.05);
-      }
-  
-      .acumen-ugc-thumb {
-        width: 100%;
-        background: #f7f7f7;
-        position: relative;
-        overflow: hidden;
-      }
-      .acumen-ugc-thumb img,
-      .acumen-ugc-thumb video {
-        width: 100%;
-        height: auto;
-        display: block;
-        object-fit: cover;
-      }
-  
-      .acumen-ugc-body {
-        padding: 12px 14px 16px;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-      .acumen-ugc-caption {
-        font-size: 14px;
-        line-height: 1.5;
-        color: #333;
-        display: -webkit-box;
-        -webkit-line-clamp: 3;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-      }
-      .acumen-ugc-actions { display:flex; gap:12px; align-items:center; }
-      .acumen-ugc-actions button,
-      .acumen-ugc-actions a {
-        font-size: 13px;
-        color: #0a66c2;
-        background: none;
-        border: none;
-        padding: 0;
-        text-decoration: underline;
-        cursor: pointer;
-      }
-  
-      .acumen-loadmore-wrap { text-align:center; margin-top: 16px; }
-      .acumen-loadmore-btn {
-        padding: 10px 16px;
-        border-radius: 6px;
-        border: 1px solid #ddd;
-        background: #fff;
-        cursor: pointer;
-        min-width: 160px;
-      }
-      .acumen-loadmore-btn[disabled] { opacity: .5; cursor: not-allowed; }
-      .acumen-loadmore-btn:hover:not([disabled]) { background: #f6f6f6; }
-  
-      /* Modal */
-      .acumen-modal {
-        position: fixed; inset: 0;
-        background: rgba(0,0,0,.5);
-        display: flex; align-items: center; justify-content: center;
-        z-index: 9999;
-      }
-      .acumen-modal-content {
-        position: relative;
-        background: #fff;
-        border-radius: 10px;
-        padding: 24px;
-        display: flex; gap: 24px;
-        max-width: 900px;
-        width: calc(100% - 40px);
-        max-height: 85vh; overflow-y: auto;
-        box-shadow: 0 10px 30px rgba(0,0,0,.18);
-      }
-      .acumen-modal-media { width: 380px; max-width: 100%; }
-      .acumen-modal-media img, .acumen-modal-media video {
-        width: 100%;
-        max-height: 520px;
-        object-fit: contain;
-        border-radius: 8px;
-      }
-      .acumen-modal-right { flex:1; display:flex; flex-direction:column; gap:12px; }
-      .acumen-modal-close {
-        position: absolute; top: 10px; right: 12px;
-        font-size: 28px; font-weight: bold; color:#555; cursor:pointer; line-height:1;
-      }
-      .acumen-modal-close:hover { color: #d00; }
-  
-      .ugc-product-card {
-        display:flex; align-items:center; gap:8px;
-        border:1px solid #eee; border-radius:8px; padding:10px;
-      }
-      .ugc-product-card img {
-        width: 64px; height:64px; object-fit:cover; border-radius:6px;
-      }
-      .ugc-product-card a {
-        color:#0a66c2; font-size:13px; text-decoration: underline;
-      }
-    `;
-    document.head.appendChild(style);
-  
-    /* ====================== 工具函数 ====================== */
-    function $(sel, ctx = document) { return ctx.querySelector(sel); }
-    function h(tag, attrs = {}, html = "") {
-      const el = document.createElement(tag);
-      Object.entries(attrs).forEach(([k, v]) => {
-        if (v === undefined || v === null) return;
-        if (k === "class") el.className = v;
-        else el.setAttribute(k, v);
-      });
-      if (html) el.innerHTML = html;
-      return el;
+    /* 响应式列数 */
+    @media (min-width: 320px)  { .acumen-ugc-grid { column-count: 1; } }
+    @media (min-width: 576px)  { .acumen-ugc-grid { column-count: 2; } }
+    @media (min-width: 992px)  { .acumen-ugc-grid { column-count: 3; } }
+    @media (min-width: 1280px) { .acumen-ugc-grid { column-count: 4; } }
+
+    /* 卡片：避免 column 内断裂 */
+    .acumen-ugc-card {
+      break-inside: avoid;
+      -webkit-column-break-inside: avoid;
+      margin: 0 0 16px;
+      display: block;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #fff;
+      box-shadow: 0 1px 6px rgba(0,0,0,.06);
     }
-  
-    function showModal(item, productMap) {
-      const modal = h("div", { class: "acumen-modal" });
-      const productHTML =
-        item.products && item.products.length
-          ? item.products.map((handle) => {
-              const p = productMap[handle];
-              return p
-                ? `<div class="ugc-product-card">
-                     <img src="${p.image}" alt="${p.title}" />
-                     <div>
-                       <div style="font-weight:600;">${p.title}</div>
-                       <div style="color:#d45a20;margin:2px 0;">$${p.price}</div>
-                       <a href="${p.link}" target="_blank" rel="noreferrer">View More</a>
-                     </div>
-                   </div>`
-                : "";
-            }).join("")
-          : "<p style='color:#666;'>No related products.</p>";
-  
-      modal.innerHTML = `
-        <div class="acumen-modal-content">
-          <span class="acumen-modal-close">&times;</span>
-          <div class="acumen-modal-media">
-            ${
-              item.media_type === "VIDEO"
-                ? `<video controls><source src="${item.media_url}" type="video/mp4" /></video>`
-                : `<img src="${item.media_url}" alt="UGC media" />`
-            }
-          </div>
-          <div class="acumen-modal-right">
-            <h3 style="margin:0 0 4px;">Related Products</h3>
-            ${productHTML}
-            <p style="margin-top:8px;"><strong>@acumencamera</strong>: ${item.caption || "No caption."}</p>
-            <a href="${item.permalink}" target="_blank" rel="noreferrer" style="color:#0a66c2;text-decoration:underline;">View original post</a>
-          </div>
+    .acumen-ugc-card a {
+      display: block;
+      text-decoration: none;
+      color: inherit;
+    }
+    .acumen-ugc-card img,
+    .acumen-ugc-card video {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .acumen-ugc-card .caption {
+      padding: 10px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #333;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Load More */
+    .acumen-ugc-loadmore {
+      display: flex;
+      justify-content: center;
+      margin: 14px 0 24px;
+    }
+    .acumen-ugc-btn {
+      border: 1px solid #222;
+      background: #fff;
+      color: #222;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: .2s ease;
+    }
+    .acumen-ugc-btn[disabled] {
+      cursor: not-allowed;
+      opacity: .5;
+    }
+    .acumen-ugc-btn:hover:not([disabled]) {
+      background: #222;
+      color: #fff;
+    }
+
+    /* Modal */
+    .acumen-modal {
+      position: fixed; inset: 0; z-index: 9999;
+      display: none; align-items: center; justify-content: center;
+      background: rgba(0,0,0,.5);
+      padding: 20px;
+    }
+    .acumen-modal.show { display: flex; }
+    .acumen-modal-content {
+      background: #fff; border-radius: 10px; width: min(980px, 96vw);
+      max-height: 86vh; overflow: auto; padding: 16px;
+      display: grid; gap: 16px; grid-template-columns: 1fr 1fr;
+    }
+    @media (max-width: 768px) {
+      .acumen-modal-content { grid-template-columns: 1fr; }
+    }
+    .acumen-modal-close {
+      position: absolute; top: 10px; right: 16px;
+      font-size: 28px; font-weight: 700; cursor: pointer;
+      color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.5);
+    }
+    .acumen-modal-media img, .acumen-modal-media video {
+      width: 100%; max-height: 70vh; object-fit: contain; background:#000;
+      border-radius: 8px;
+    }
+    .ugc-product-card {
+      display: flex; gap: 10px; align-items: center;
+      padding: 8px; border: 1px solid #eee; border-radius: 6px; margin-bottom: 8px;
+    }
+    .ugc-product-card img { width: 64px; height: 64px; object-fit: cover; border-radius: 4px; }
+    .ugc-product-card a { color: #0a58ca; text-decoration: underline; font-size: 13px; }
+    .acumen-modal-right .caption { white-space: pre-wrap; }
+  `;
+  document.head.appendChild(style);
+
+  // --- 工具 ---
+  const qsa = (sel, ctx = document) => Array.from(ctx.querySelectorAll(sel));
+  const escapeHtml = (s = "") =>
+    s.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+
+  /** 把媒体 ID 转为代理地址，彻底避免 403 */
+  const mediaSrc = (item) =>
+    `${API_BASE}/api/ig-media?id=${encodeURIComponent(item.id)}`;
+
+  // --- 产品数据 ---
+  let productMap = {};
+  fetch(`${API_BASE}/api-products`)
+    .then((r) => r.json())
+    .then((data) => {
+      (data.products || []).forEach((p) => (productMap[p.handle] = p));
+    })
+    .catch((e) => console.warn("[Hashtag UGC] load products failed:", e));
+
+  // --- UI: Modal ---
+  let modal;
+  function ensureModal() {
+    if (modal) return modal;
+    modal = document.createElement("div");
+    modal.className = "acumen-modal";
+    modal.innerHTML = `
+      <div class="acumen-modal-close">&times;</div>
+      <div class="acumen-modal-content">
+        <div class="acumen-modal-media"></div>
+        <div class="acumen-modal-right">
+          <h4>Related Products</h4>
+          <div class="acumen-modal-products"></div>
+          <p class="caption"></p>
+          <a class="origin" target="_blank" style="color:#0a58ca;text-decoration:underline;">View original post</a>
         </div>
-      `;
-      const close = () => modal.remove();
-      modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
-      $(".acumen-modal-close", modal)?.addEventListener("click", close);
-      document.body.appendChild(modal);
-    }
-  
-    /* ====================== 渲染单个 Masonry 容器（分页） ====================== */
-    function bootMasonryContainer(container, productMap) {
-      const category = (container.getAttribute("data-category") || "").trim();
-      if (!category) return;
-  
-      const endpoint = container.getAttribute("data-endpoint") || HASHTAG_API;
-      const productsEndpoint = container.getAttribute("data-products") || PRODUCTS_API;
-      const initial = Number(container.getAttribute("data-initial") || 24);
-      const step = Number(container.getAttribute("data-step") || 12);
-  
-      container.innerHTML = `
-        <div class="acumen-masonry"></div>
-        <div class="acumen-loadmore-wrap">
-          <button class="acumen-loadmore-btn" type="button">Load more</button>
-        </div>
-      `;
-      const grid = container.querySelector(".acumen-masonry");
-      const loadBtn = container.querySelector(".acumen-loadmore-btn");
-  
-      let offset = 0;
-      let total = Infinity;
-      let isLoading = false;
-  
-      async function fetchPage(limit, off) {
-        const url = new URL(endpoint);
-        url.searchParams.set("category", category);
-        url.searchParams.set("limit", String(limit));
-        url.searchParams.set("offset", String(off));
-        const res = await fetch(url.toString(), { credentials: "omit" });
-        const ct = res.headers.get("content-type") || "";
-        if (!res.ok || !ct.includes("application/json")) {
-          const text = await res.text();
-          throw new Error(`Fetch hashtag-ugc failed: ${res.status} ${text.slice(0,120)}`);
-        }
-        return res.json(); // { media, total }
+      </div>`;
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal || e.target.classList.contains("acumen-modal-close")) {
+        modal.classList.remove("show");
       }
-  
-      function renderItems(items) {
-        const html = items.map((item) => {
-          const mediaHTML =
-            item.media_type === "VIDEO"
-              ? `<video muted playsinline loop><source src="${item.media_url}" type="video/mp4"></video>`
-              : `<img src="${item.media_url}" alt="UGC media" loading="lazy" />`;
-  
-          return `
-            <article class="acumen-ugc-card" data-id="${item.id}">
-              <div class="acumen-ugc-thumb">${mediaHTML}</div>
-              <div class="acumen-ugc-body">
-                <div class="acumen-ugc-caption">${item.caption || ""}</div>
-                <div class="acumen-ugc-actions">
-                  <button class="acumen-view" type="button">View full post</button>
-                  <a href="${item.permalink}" target="_blank" rel="noreferrer">Open on Instagram</a>
-                </div>
-              </div>
-            </article>
-          `;
-        }).join("");
-        grid.insertAdjacentHTML("beforeend", html);
-  
-        items.forEach((item) => {
-          const card = grid.querySelector(`.acumen-ugc-card[data-id="${item.id}"]`);
-          const view = card?.querySelector(".acumen-view");
-          const thumb = card?.querySelector(".acumen-ugc-thumb");
-          const open = () => showModal(item, productMap);
-          view?.addEventListener("click", open);
-          thumb?.addEventListener("click", open);
-        });
-      }
-  
-      async function loadMore(first = false) {
-        if (isLoading) return;
-        if (offset >= total) return;
-  
-        isLoading = true;
-        loadBtn.disabled = true;
-        loadBtn.textContent = "Loading...";
-  
-        const pageSize = first ? initial : step;
-        try {
-          const data = await fetchPage(pageSize, offset);
-          const list = Array.isArray(data.media) ? data.media : [];
-          total = typeof data.total === "number" ? data.total : total;
-  
-          renderItems(list);
-          offset += list.length;
-  
-          if (offset >= total || list.length === 0) {
-            loadBtn.disabled = true;
-            loadBtn.textContent = "No more posts";
-          } else {
-            loadBtn.disabled = false;
-            loadBtn.textContent = "Load more";
+    });
+    document.body.appendChild(modal);
+    return modal;
+  }
+
+  function openModal(item) {
+    const m = ensureModal();
+    const media = m.querySelector(".acumen-modal-media");
+    const products = m.querySelector(".acumen-modal-products");
+    const caption = m.querySelector(".caption");
+    const origin = m.querySelector(".origin");
+
+    media.innerHTML =
+      item.media_type === "VIDEO"
+        ? `<video controls playsinline><source src="${mediaSrc(item)}" type="video/mp4" /></video>`
+        : `<img src="${mediaSrc(item)}" alt="ugc detail" />`;
+
+    const html = (item.products || [])
+      .map((h) => {
+        const p = productMap[h];
+        return p
+          ? `<div class="ugc-product-card">
+               <img src="${p.image}" alt="${escapeHtml(p.title)}" />
+               <div>
+                 <div style="font-size:14px;margin-bottom:2px;">${escapeHtml(p.title)}</div>
+                 <div style="color:#d45a20;margin-bottom:4px;">$${p.price}</div>
+                 <a href="${p.link}" target="_blank">View more</a>
+               </div>
+             </div>`
+          : "";
+      })
+      .join("");
+    products.innerHTML = html || "<p style='font-size:13px;color:#666;'>No related products.</p>";
+
+    caption.textContent = item.caption || "";
+    origin.href = item.permalink;
+
+    m.classList.add("show");
+  }
+
+  // --- 生成卡片 ---
+  function cardHTML(item) {
+    const isVideo = item.media_type === "VIDEO";
+    return `
+      <div class="acumen-ugc-card" data-id="${item.id}">
+        <a href="javascript:void(0)" class="ugc-open">
+          ${
+            isVideo
+              ? `<video muted playsinline preload="metadata"><source src="${mediaSrc(item)}" type="video/mp4" /></video>`
+              : `<img src="${mediaSrc(item)}" alt="ugc" loading="lazy" />`
           }
-        } catch (e) {
-          console.error(`[Hashtag UGC] fetch error (${category}):`, e);
-          loadBtn.disabled = false;
-          loadBtn.textContent = "Retry";
-        } finally {
-          isLoading = false;
+        </a>
+        ${
+          item.caption
+            ? `<div class="caption">${escapeHtml(item.caption)}</div>`
+            : ""
         }
-      }
-  
-      loadBtn.addEventListener("click", () => loadMore(false));
-      loadMore(true);
+      </div>
+    `;
+  }
+
+  function bindCardEvents(container, itemsById) {
+    qsa(".ugc-open", container).forEach((a) => {
+      a.addEventListener("click", () => {
+        const card = a.closest(".acumen-ugc-card");
+        const id = card?.getAttribute("data-id");
+        if (id && itemsById[id]) openModal(itemsById[id]);
+      });
+    });
+  }
+
+  // --- 分页加载 ---
+  class UGCList {
+    constructor(category, host) {
+      this.category = category;
+      this.host = host;
+      this.grid = document.createElement("div");
+      this.grid.className = "acumen-ugc-grid";
+      this.host.appendChild(this.grid);
+
+      this.btnWrap = document.createElement("div");
+      this.btnWrap.className = "acumen-ugc-loadmore";
+      this.btnWrap.innerHTML = `<button class="acumen-ugc-btn">Load more</button>`;
+      this.host.appendChild(this.btnWrap);
+      this.btn = this.btnWrap.querySelector("button");
+
+      this.offset = 0;
+      this.total = 0;
+      this.loading = false;
+      this.itemsById = {};
+
+      this.btn.addEventListener("click", () => this.loadMore());
+      // 首屏
+      this.loadMore(true);
     }
-  
-    /* ====================== 启动：加载产品、初始化所有容器 ====================== */
-    async function init() {
-      let productMap = {};
+
+    async fetchPage() {
+      const url = new URL(`${API_BASE}/api.hashtag-ugc`);
+      url.searchParams.set("category", this.category);
+      url.searchParams.set("limit", String(PAGE_SIZE));
+      url.searchParams.set("offset", String(this.offset));
+
+      const res = await fetch(url.toString(), { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    }
+
+    async loadMore(first = false) {
+      if (this.loading) return;
+      this.loading = true;
+      this.btn.disabled = true;
+      this.btn.textContent = "Loading...";
+
       try {
-        const res = await fetch(PRODUCTS_API);
-        const ct = res.headers.get("content-type") || "";
-        if (!res.ok || !ct.includes("application/json")) {
-          const text = await res.text();
-          throw new Error(`Unexpected response: ${res.status} ${text.slice(0,120)}`);
+        const data = await this.fetchPage();
+        const list = data.media || [];
+        this.total = Number(data.total || 0);
+
+        // 渲染
+        const html = list.map((it) => {
+          this.itemsById[it.id] = it;
+          return cardHTML(it);
+        }).join("");
+        const frag = document.createElement("div");
+        frag.innerHTML = html;
+        // 将 frag 里的子元素 append 到 grid（减少回流）
+        while (frag.firstChild) this.grid.appendChild(frag.firstChild);
+
+        bindCardEvents(this.grid, this.itemsById);
+
+        this.offset += list.length;
+        if (this.offset >= this.total || list.length < PAGE_SIZE) {
+          this.btnWrap.style.display = "none";
+        } else {
+          this.btnWrap.style.display = "flex";
+          this.btn.disabled = false;
+          this.btn.textContent = "Load more";
         }
-        const data = await res.json();
-        (data.products || []).forEach((p) => { productMap[p.handle] = p; });
       } catch (e) {
-        console.warn("[Hashtag UGC] load products failed:", e);
+        console.error(`[Hashtag UGC] fetch error (${this.category}):`, e);
+        this.btn.disabled = false;
+        this.btn.textContent = "Retry";
+      } finally {
+        this.loading = false;
       }
-  
-      document
-        .querySelectorAll(".acumen-hashtag-ugc[data-category]")
-        .forEach((el) => bootMasonryContainer(el, productMap));
     }
-  
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", init);
-    } else {
-      init();
-    }
-  })();
-  
+  }
+
+  // --- 启动：找到页面上的每个分类容器 ---
+  const SUPPORTED = new Set([
+    "camping",
+    "off-road",
+    "electronic",
+    "travel",
+    "documentation",
+    "events",
+  ]);
+
+  const hosts = qsa("[data-ugc-cat]").filter((el) =>
+    SUPPORTED.has(el.getAttribute("data-ugc-cat"))
+  );
+
+  if (!hosts.length) {
+    console.warn(
+      "[Hashtag UGC] no containers found. Add elements like <div data-ugc-cat=\"camping\"></div>"
+    );
+    return;
+  }
+
+  hosts.forEach((host) => {
+    const cat = host.getAttribute("data-ugc-cat");
+    new UGCList(cat, host);
+  });
+
+  console.log("AVADA Joy has initialized");
+})();
