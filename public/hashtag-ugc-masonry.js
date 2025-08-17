@@ -1,14 +1,14 @@
 /* public/hashtag-ugc-masonry.js */
 (function () {
-  // 允许在 <script> 上通过 data-api-base 覆盖域名
-  const SCRIPT = document.currentScript || document.getElementById("acumen-hashtag-ugc");
-  const API_BASE = (SCRIPT && SCRIPT.getAttribute("data-api-base")) || "https://ugc.acumen-camera.com";
+  const SCRIPT =
+    document.currentScript || document.getElementById("acumen-hashtag-ugc");
+  const API_BASE =
+    (SCRIPT && SCRIPT.getAttribute("data-api-base")) ||
+    "https://ugc.acumen-camera.com";
 
-  // 接口（连字符）
   const API_HASHTAG = `${API_BASE}/api-hashtag-ugc`;
-  const API_OEMBED  = `${API_BASE}/api-ig-oembed`; // 你刚建的 oEmbed 代理
+  const API_OEMBED = `${API_BASE}/api-ig-oembed`;
 
-  // 页面上每个分类对应的容器（存在才渲染）
   const TARGETS = {
     camping: document.querySelector("#ugc-camping"),
     "off-road": document.querySelector("#ugc-off-road"),
@@ -18,7 +18,6 @@
     events: document.querySelector("#ugc-events"),
   };
 
-  // 样式（含 Modal）
   const css = `
   .ugc-masonry { column-count: 1; column-gap: 16px; }
   @media (min-width: 640px) { .ugc-masonry { column-count: 2; } }
@@ -30,8 +29,6 @@
   .ugc-caption { padding: 12px; font-size: 14px; line-height: 1.5; color:#333; }
   .ugc-loadmore { margin: 16px auto 0; display:block; padding:10px 16px; border:1px solid #ddd; background:#fff; border-radius:6px; cursor:pointer; }
   .ugc-empty { color:#999; font-size:14px; padding:16px 0; text-align:center; }
-
-  /* Modal */
   .igm[hidden]{display:none}
   .igm{position:fixed;inset:0;z-index:9999}
   .igm__bg{position:absolute;inset:0;background:rgba(0,0,0,.55)}
@@ -42,13 +39,13 @@
   .igm__actions{padding:12px;border-top:1px solid #eee;display:flex;justify-content:flex-end;gap:8px}
   .igm__btn{padding:8px 12px;border:1px solid #ddd;border-radius:8px;background:#fff}
   .igm__wrap{position:relative}
-  .igm__shield{position:absolute;inset:0;background:transparent} /* 阻止 iframe 内点击，避免跳走 */
+  .igm__shield{position:absolute;inset:0;background:transparent}
   `;
   const style = document.createElement("style");
   style.innerHTML = css;
   document.head.appendChild(style);
 
-  // ---- Modal（页面只插一次） ----
+  // Modal
   const modal = document.createElement("div");
   modal.id = "ig-modal";
   modal.className = "igm";
@@ -59,46 +56,67 @@
       <button class="igm__x" type="button" data-close>&times;</button>
       <div id="ig-modal-body" class="igm__body"></div>
       <div class="igm__actions">
-        <a id="ig-open" class="igm__btn" target="_blank" rel="noopener">在 Instagram 查看</a>
+        <a id="ig-open" class="igm__btn" target="_blank" rel="noopener">View on Instagram</a>
       </div>
     </div>`;
   document.body.appendChild(modal);
   const modalBody = modal.querySelector("#ig-modal-body");
   const modalOpen = modal.querySelector("#ig-open");
-  modal.addEventListener("click", (e) => { if (e.target.hasAttribute("data-close")) closeModal(); });
-  function openModal(){ modal.hidden = false; document.body.style.overflow = "hidden"; }
-  function closeModal(){ modal.hidden = true; modalBody.innerHTML = ""; document.body.style.overflow = ""; }
+  modal.addEventListener("click", (e) => {
+    if (e.target.hasAttribute("data-close")) closeModal();
+  });
+  function openModal() {
+    modal.hidden = false;
+    document.body.style.overflow = "hidden";
+  }
+  function closeModal() {
+    modal.hidden = true;
+    modalBody.innerHTML = "";
+    document.body.style.overflow = "";
+  }
 
-  // 只加载一次 Instagram oEmbed 脚本
-  function ensureEmbedJs(){
-    if (window.__igEmbedLoaded) { window.instgrm?.Embeds?.process(); return; }
+  function ensureEmbedJs() {
+    if (window.__igEmbedLoaded) {
+      window.instgrm?.Embeds?.process();
+      return;
+    }
     const s = document.createElement("script");
     s.src = "https://www.instagram.com/embed.js";
     s.async = true;
-    s.onload = () => { window.__igEmbedLoaded = true; window.instgrm?.Embeds?.process(); };
+    s.onload = () => {
+      window.__igEmbedLoaded = true;
+      window.instgrm?.Embeds?.process();
+    };
     document.body.appendChild(s);
   }
 
-  // 打开弹窗：IMAGE/CAROUSEL 用缩略图，VIDEO 用 oEmbed
-  async function showLightbox(permalink, type){
+  async function showLightbox(permalink, type) {
     modalOpen.href = permalink || "#";
     modalBody.innerHTML = '<div style="padding:40px;color:#999">Loading…</div>';
 
-    // 拉 oEmbed（拿缩略图/iframe html）
-    const r = await fetch(`${API_OEMBED}?url=${encodeURIComponent(permalink)}`);
-    const j = await r.json();
+    try {
+      const r = await fetch(`${API_OEMBED}?url=${encodeURIComponent(permalink)}`);
+      const j = await r.json();
 
-    if (type === "VIDEO") {
-      modalBody.innerHTML = `<div class="igm__wrap">${j.html || ""}<div class="igm__shield" title="点击下方按钮在 Instagram 查看"></div></div>`;
-      ensureEmbedJs();
-    } else {
-      const src = j.thumbnail_url || "";
-      modalBody.innerHTML = src ? `<img src="${src}" alt="">` : `<div style="padding:40px">无法加载</div>`;
+      if (type === "VIDEO") {
+        modalBody.innerHTML = `<div class="igm__wrap">${
+          j.html || ""
+        }<div class="igm__shield" title="Open in Instagram via the button below"></div></div>`;
+        ensureEmbedJs();
+      } else {
+        const src = j.thumbnail_url || "";
+        modalBody.innerHTML = src
+          ? `<img src="${src}" alt="">`
+          : `<div style="padding:40px">Failed to load</div>`;
+      }
+    } catch (e) {
+      modalBody.innerHTML = `<div style="padding:40px">Error: ${String(
+        e?.message || e
+      )}</div>`;
     }
     openModal();
   }
 
-  // —— Masonry 组件 —— //
   class MasonryList {
     constructor(container, category, pageSize = 24) {
       this.container = container;
@@ -108,7 +126,9 @@
       this.total = 0;
 
       if (!this.container) {
-        console.warn(`[Hashtag UGC] container for "${category}" not found, skip.`);
+        console.warn(
+          `[Hashtag UGC] container for "${category}" not found, skip.`
+        );
         this.disabled = true;
         return;
       }
@@ -125,29 +145,33 @@
       this.container.appendChild(this.wrap);
       this.container.appendChild(this.loadMoreBtn);
 
-      // 事件代理（整列只绑定一次）
-      this.wrap.addEventListener("click", (e) => {
-        const btn = e.target.closest(".ugc-open");
-        if (!btn) return;
-        e.preventDefault();
-        const card = btn.closest(".ugc-card");
-        const link = card?.dataset.link || "";
-        const type = card?.dataset.type || "IMAGE";
-        if (link) showLightbox(link, type);
-      }, { once: true });
+      // 事件代理：只绑定一次
+      this.wrap.addEventListener(
+        "click",
+        (e) => {
+          const btn = e.target.closest(".ugc-open");
+          if (!btn) return;
+          e.preventDefault();
+          const card = btn.closest(".ugc-card");
+          const link = card?.dataset.link || "";
+          const type = card?.dataset.type || "IMAGE";
+          if (link) showLightbox(link, type);
+        },
+        { once: true }
+      );
     }
 
     async loadMore() {
       if (this.disabled) return;
+
       try {
         const data = await this.fetchPage(this.offset);
-        if (!data) return;
-
         const list = data.media || [];
         const failed = data.failed || [];
         this.total = data.total || this.total;
 
-        if (failed.length) console.info(`[Hashtag UGC] ${this.category} failed:`, failed);
+        if (failed.length)
+          console.info(`[Hashtag UGC] ${this.category} failed:`, failed);
 
         if (!list.length) {
           if (this.offset === 0) {
@@ -163,14 +187,18 @@
         for (const item of list) this.appendItem(item);
 
         this.offset += list.length;
-        this.loadMoreBtn.style.display = (this.offset >= this.total) ? "none" : "inline-block";
+        this.loadMoreBtn.style.display =
+          this.offset >= this.total ? "none" : "inline-block";
       } catch (err) {
         console.error(`[Hashtag UGC] fetch error (${this.category}):`, err);
       }
     }
 
     async fetchPage(offset) {
-      const url = `${API_HASHTAG}?category=${encodeURIComponent(this.category)}&limit=${this.pageSize}&offset=${offset}&skipDetail=1`; // ✅ Dev 下关键
+      // 如果 admin 已把富字段存入文件，建议 noRefetch=1 彻底不打 Graph
+      const url = `${API_HASHTAG}?category=${encodeURIComponent(
+        this.category
+      )}&limit=${this.pageSize}&offset=${offset}&noRefetch=1`;
       const res = await fetch(url, { mode: "cors" });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       return res.json();
@@ -178,7 +206,6 @@
 
     appendItem(item) {
       if (!this.wrap) return;
-
       const card = document.createElement("div");
       card.className = "ugc-card";
       card.dataset.type = item.media_type || "IMAGE";
@@ -187,27 +214,31 @@
       const mediaUrl = item.media_url || item.thumbnail_url || "";
       if (!mediaUrl) return;
 
-      const mediaHtml =
-        item.media_type === "VIDEO"
-          ? `<img class="ugc-media-wrap" src="${mediaUrl}" alt="">` // 列表用缩略图；真正播放放弹窗
-          : `<img class="ugc-media-wrap" src="${mediaUrl}" alt="">`;
+      const mediaHtml = `<img class="ugc-media-wrap" src="${mediaUrl}" alt="">`;
 
       card.innerHTML = `
         <button class="ugc-open" type="button">
           ${mediaHtml}
         </button>
-        ${ item.caption ? `<div class="ugc-caption">${escapeHtml(item.caption.slice(0, 200))}</div>` : "" }
+        ${
+          item.caption
+            ? `<div class="ugc-caption">${escapeHtml(
+                String(item.caption).slice(0, 200)
+              )}</div>`
+            : ""
+        }
       `;
       this.wrap.appendChild(card);
     }
   }
 
-  // 简单转义
   function escapeHtml(str) {
-    return String(str).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    return String(str)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
   }
 
-  // 初始化所有存在的分类容器
   function boot() {
     Object.keys(TARGETS).forEach((cat) => {
       const el = TARGETS[cat];
@@ -217,6 +248,7 @@
     });
   }
 
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  if (document.readyState === "loading")
+    document.addEventListener("DOMContentLoaded", boot);
   else boot();
 })();
