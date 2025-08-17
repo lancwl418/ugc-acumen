@@ -206,27 +206,28 @@
 
     appendItem(item) {
       if (!this.wrap) return;
+    
       const card = document.createElement("div");
       card.className = "ugc-card";
       card.dataset.type = item.media_type || "IMAGE";
       card.dataset.link = item.permalink || "#";
-
+    
       const mediaUrl = item.media_url || item.thumbnail_url || "";
       if (!mediaUrl) return;
-
-      const mediaHtml = `<img class="ugc-media-wrap" src="${mediaUrl}" alt="">`;
-
+    
+      const mediaHtml =
+        item.media_type === "VIDEO"
+          ? `<img class="ugc-media-wrap" src="${mediaUrl}" alt="">`
+          : `<img class="ugc-media-wrap" src="${mediaUrl}" alt="">`;
+    
+      const author = item.author ? `<div class="ugc-caption" style="color:#666;font-size:12px;margin-top:-6px;">@${escapeHtml(item.author)}</div>` : "";
+    
       card.innerHTML = `
         <button class="ugc-open" type="button">
           ${mediaHtml}
         </button>
-        ${
-          item.caption
-            ? `<div class="ugc-caption">${escapeHtml(
-                String(item.caption).slice(0, 200)
-              )}</div>`
-            : ""
-        }
+        ${ item.caption ? `<div class="ugc-caption">${escapeHtml(item.caption.slice(0, 200))}</div>` : "" }
+        ${ author }
       `;
       this.wrap.appendChild(card);
     }

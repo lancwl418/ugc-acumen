@@ -6,183 +6,141 @@ import {
   ensureVisibleHashtagFile,
 } from "../lib/persistPaths.js";
 
-const token = process.env.PAGE_TOKEN; // 用客户 Page 长效 token
+const token = process.env.PAGE_TOKEN; // 用你现在的 Page 长效 Token
 
-// 读 JSON（容错空文件/半包）
-async function readJsonSafe(file, fallback = "[]", retries = 2) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const raw = await fs.readFile(file, "utf-8");
-      if (!raw || !raw.trim()) throw new Error("empty json file");
-      return JSON.parse(raw);
-    } catch (e) {
-      if (i === retries - 1) {
-        try {
-          return JSON.parse(fallback);
-        } catch {
-          return [];
-        }
-      }
-      await new Promise((r) => setTimeout(r, 80));
-    }
-  }
-  return [];
-}
+// --- utils ---
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// 简单并发调度器
-async function mapWithConcurrency(list, concurrency, mapper) {
-  const result = new Array(list.length);
-  let idx = 0;
+function safeParse(s, fb = []) { try { return JSON.parse(s); } catch { return fb; } }
 
+async function mapWithConcurrency(list, limit, fn) {
+  const out = new Array(list.length);
+  let i = 0;
   async function worker() {
-    while (idx < list.length) {
-      const cur = idx++;
-      try {
-        result[cur] = await mapper(list[cur], cur);
-      } catch (e) {
-        result[cur] = null;
-      }
+    while (i < list.length) {
+      const cur = i++;
+      try { out[cur] = await fn(list[cur], cur); }
+      catch (e) { out[cur] = { __failed: true, error: String(e) }; }
     }
   }
-
-  const pool = new Array(Math.min(concurrency, list.length))
-    .fill(0)
-    .map(worker);
-
-  await Promise.all(pool);
-  return result;
+  await Promise.all(new Array(Math.min(limit, list.length)).fill(0).map(worker));
+  return out;
 }
 
+function guessTypeFromOembedHtml(html = "") {
+  return /video|mp4|ig-video/i.test(html) ? "VIDEO" : "IMAGE";
+}
+function extractUsernameFromUrl(url = "") {
+  // https://www.instagram.com/{username}
+  const m = url.match(/instagram\.com\/([^\/?#]+)/i);
+  return m ? m[1] : "";
+}
+
+// --- Remix loader ---
 export async function loader({ request }) {
+  const url = new URL(request.url);
+  const category = url.searchParams.get("category");
+  const limit = Number(url.searchParams.get("limit") || 24);
+  const offset = Number(url.searchParams.get("offset") || 0);
+
   if (!token) {
     return json({ error: "Missing PAGE_TOKEN" }, { status: 500 });
   }
 
-  const url = new URL(request.url);
-  const filterCategory = url.searchParams.get("category");
-  const limit = Number(url.searchParams.get("limit") || 0);
-  const offset = Number(url.searchParams.get("offset") || 0);
-  const noRefetch = url.searchParams.get("noRefetch") === "1"; // ✅ 只读本地富字段
-
-  // 1) 读可见清单
   await ensureVisibleHashtagFile();
-  const visible = await readJsonSafe(VISIBLE_HASHTAG_PATH, "[]");
+  const raw = await fs.readFile(VISIBLE_HASHTAG_PATH, "utf-8").catch(() => "[]");
+  let all = safeParse(raw, []);
 
-  // 2) 分类过滤
-  let toFetch = filterCategory
-    ? visible.filter((v) => v.category === filterCategory)
-    : visible.slice();
+  // 过滤分类
+  if (category) all = all.filter(x => x.category === category);
 
-  const total = toFetch.length;
+  // 时间降序（如果你的文件已是降序，这行可去掉）
+  all.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
 
-  // 3) 分页裁切
-  if (limit > 0) {
-    toFetch = toFetch.slice(offset, offset + limit);
-  }
+  const total = all.length;
+  const pageSlice = limit > 0 ? all.slice(offset, offset + limit) : all;
 
-  const fields =
-    "id,media_url,permalink,caption,media_type,timestamp,thumbnail_url";
+  const fields = "id,caption,media_type,media_url,permalink,timestamp,thumbnail_url,username";
   const concurrency = 5;
 
-  const ok = [];
   const failed = [];
+  const media = [];
 
-  // 4) 逐条拿详情（或直接返回本地富字段）
-  const rows = await mapWithConcurrency(toFetch, concurrency, async (entry) => {
-    // ✅ 文件里已有富字段并且 noRefetch=1：直接用，完全不打 Graph
-    if (
-      noRefetch &&
-      entry.permalink &&
-      (entry.media_url || entry.thumbnail_url)
-    ) {
-      return {
-        id: entry.id,
-        media_url: entry.media_url || entry.thumbnail_url || "",
-        media_type: entry.media_type || "IMAGE",
-        caption: entry.caption || "",
-        permalink: entry.permalink,
-        timestamp: entry.timestamp || "",
-        category: entry.category || null,
-        products: entry.products || [],
-        thumbnail_url: entry.thumbnail_url || null,
-      };
-    }
-
-    // 允许旧数据兜底：还是尝试拉一次 Graph
+  const rows = await mapWithConcurrency(pageSlice, concurrency, async (entry) => {
+    // 1) 优先 Graph 详情
+    let detail = null;
     try {
-      const graphUrl = `https://graph.facebook.com/v23.0/${entry.id}?fields=${fields}&access_token=${encodeURIComponent(
-        token
-      )}`;
-      const resp = await fetch(graphUrl);
+      const r = await fetch(
+        `https://graph.facebook.com/v23.0/${entry.id}?fields=${fields}&access_token=${token}`
+      );
+      detail = await r.json();
 
-      const text = await resp.text(); // 记录原文，便于定位
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = null;
-      }
+      if (detail?.error) throw new Error(detail.error?.message || "Graph error");
 
-      if (!resp.ok) {
-        failed.push({
-          id: entry.id,
-          category: entry.category,
-          code: data?.error?.code || resp.status,
-          reason:
-            data?.error?.message || `HTTP ${resp.status} ${resp.statusText}`,
-        });
-        return null;
-      }
-
-      if (!data || data.error) {
-        failed.push({
-          id: entry.id,
-          category: entry.category,
-          code: data?.error?.code || "UNKNOWN",
-          reason: data?.error?.message || "Unknown error",
-        });
-        return null;
-      }
-
+      // Graph 成功，但有时候 media_url 会因权限为空，先容错
+      const murl = detail.media_url || detail.thumbnail_url || entry.thumb || "";
+      if (!murl) throw new Error("Graph missing media_url");
       return {
-        id: data.id,
-        media_url: data.media_url || data.thumbnail_url || "",
-        media_type: data.media_type,
-        caption: data.caption || "",
-        permalink: data.permalink,
-        timestamp: data.timestamp || "",
+        id: detail.id,
+        media_url: murl,
+        thumbnail_url: detail.thumbnail_url || entry.thumb || "",
+        media_type: detail.media_type || entry.media_type || "IMAGE",
+        caption: detail.caption || entry.caption || "",
+        permalink: detail.permalink || entry.permalink || "",
+        timestamp: detail.timestamp || entry.timestamp || "",
+        author: detail.username || entry.username || "", // ✅ 作者
         category: entry.category || null,
         products: entry.products || [],
-        thumbnail_url: data.thumbnail_url || null,
       };
-    } catch (err) {
-      failed.push({
-        id: entry.id,
-        category: entry.category,
-        code: "FETCH_EXCEPTION",
-        reason: String(err?.message || err),
-      });
-      return null;
+    } catch (e) {
+      // 2) 失败：oEmbed 兜底
+      try {
+        // 你的代理：/api-ig-oembed?url=...
+        const r2 = await fetch(
+          `${process.env.PUBLIC_ORIGIN || ""}/api-ig-oembed?url=${encodeURIComponent(entry.permalink)}`
+        );
+        const o = await r2.json();
+
+        const thumb = o.thumbnail_url || entry.thumb || "";
+        const type = guessTypeFromOembedHtml(o.html || "");
+
+        if (!thumb) throw new Error("oEmbed no thumbnail");
+
+        return {
+          id: entry.id,
+          media_url: thumb,                       // 列表用缩略图
+          thumbnail_url: thumb,
+          media_type: type || entry.media_type || "IMAGE",
+          caption: (o.title || "").trim() || entry.caption || "", // oEmbed.title 通常为 caption
+          permalink: entry.permalink || "",
+          timestamp: entry.timestamp || "",
+          author: o.author_name || extractUsernameFromUrl(o.author_url || "") || "",
+          category: entry.category || null,
+          products: entry.products || [],
+        };
+      } catch (e2) {
+        failed.push({
+          id: entry.id,
+          category: entry.category,
+          reason: String(e2?.message || e2 || "fallback failed"),
+        });
+        return null;
+      }
     }
   });
 
-  for (const r of rows) if (r) ok.push(r);
-
-  // 5) 时间降序
-  ok.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+  for (const r of rows) if (r) media.push(r);
 
   return json(
     {
-      media: ok,
+      media,
       failed,
       total,
-      page: { limit, offset, returned: ok.length },
+      page: { limit, offset, returned: media.length },
     },
     {
       headers: {
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
         "Cache-Control": "public, max-age=60",
       },
     }
