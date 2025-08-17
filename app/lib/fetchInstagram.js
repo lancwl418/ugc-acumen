@@ -23,6 +23,7 @@ export async function fetchInstagramUGC() {
       permalink: item.permalink,
       timestamp: item.timestamp,
       media_type: item.media_type,
+      username: item.username
     }));
 
     await fs.writeFile("public/ugc.json", JSON.stringify(items, null, 2), "utf-8");

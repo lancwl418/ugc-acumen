@@ -222,6 +222,12 @@ export default function AdminHashtagUGC() {
                             id: item.id,
                             category,
                             products: selectedProducts,
+                            username: item.username,
+                            timestamp: item.timestamp,
+                            media_type: item.media_type,
+                            media_url: item.media_url,
+                            caption: item.caption,
+                            permalink: item.permalink
                           })}
                         />
                       </>
