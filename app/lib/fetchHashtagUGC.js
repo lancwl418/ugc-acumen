@@ -1,90 +1,97 @@
-// app/lib/fetchHashtagUGC.js
+// app/lib/fetchInstagram.js
 import fs from "fs/promises";
 import fetch from "node-fetch";
-import path from "path";
-
-// 新增：原子写工具
-async function atomicWrite(file, data) {
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp`;
-  await fs.writeFile(tmp, data, "utf-8");
-  await fs.rename(tmp, file); // rename 是原子的
-}
 
 /**
- * 环境变量（Render 上配置）：
- * - PAGE_TOKEN        长效 Page Access Token
- * - INSTAGRAM_IG_ID   IG 业务账号 ID（1784...）
- * - HASHTAG           可选，默认 "acumencamera"
+ * 环境变量：
+ * - PAGE_TOKEN           长效 Page Access Token（你已经配在 Render）
+ * - INSTAGRAM_IG_ID      IG 业务账号 ID（1784...）
+ * - HASHTAG              可选：默认 "acumencamera"
  */
 const PAGE_TOKEN = process.env.PAGE_TOKEN;
 const IG_ID = process.env.INSTAGRAM_IG_ID;
 const DEFAULT_TAG = process.env.HASHTAG || "acumencamera";
 
-/* ========== 小工具 ========== */
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// ---- 你现有的函数（保留） ----
+const igUserToken = process.env.INSTAGRAM_ACCESS_TOKEN;
+const igUserId = process.env.INSTAGRAM_IG_ID;
+const userMediaUrl = `https://graph.facebook.com/v23.0/${igUserId}/media?fields=id,media_url,caption,permalink,timestamp,media_type&access_token=${igUserToken}`;
 
-async function safeFetch(url, opts = {}, tryCount = 0) {
-  const res = await fetch(url, opts);
-  if (res.status === 429) {
-    // 简单退避：最多重试 3 次
-    if (tryCount >= 3) throw new Error("Rate limited (429) repeatedly");
-    const retryAfter = Number(res.headers.get("Retry-After")) || 1;
-    await sleep((retryAfter + tryCount) * 1000);
-    return safeFetch(url, opts, tryCount + 1);
+export async function fetchInstagramUGC() {
+  try {
+    const res = await fetch(userMediaUrl);
+    const json = await res.json();
+
+    if (!json.data) {
+      console.warn("⚠️ Instagram 返回无数据:", json);
+      return;
+    }
+
+    const items = json.data.map((item) => ({
+      id: item.id,
+      media_url: item.media_url,
+      caption: item.caption || "",
+      permalink: item.permalink,
+      timestamp: item.timestamp,
+      media_type: item.media_type,
+      username: item.username
+    }));
+
+    await fs.writeFile("public/ugc.json", JSON.stringify(items, null, 2), "utf-8");
+    console.log(`✅ 已抓取 ${items.length} 条 Instagram UGC`);
+  } catch (err) {
+    console.error("❌ 抓取 Instagram 内容出错:", err);
   }
-  return res;
 }
 
-/* ========== 1) 话题名 -> hashtag_id ========== */
+// ---- 新增：抓取指定 hashtag 的 UGC（top_media + 可选 recent_media） ----
+
+/**
+ * 通过标签名获取 hashtag_id
+ */
 async function getHashtagId(tag, igId, pageToken) {
   const url = new URL("https://graph.facebook.com/v23.0/ig_hashtag_search");
   url.searchParams.set("user_id", igId);
   url.searchParams.set("q", tag);
   url.searchParams.set("access_token", pageToken);
 
-  const res = await safeFetch(url.toString());
+  const res = await fetch(url);
   const json = await res.json();
   if (!json.data?.length) return null;
   return json.data[0].id;
 }
 
-/* ========== 2) 抓取某个 edge（top_media / recent_media），自动分页 ========== */
-async function fetchHashtagEdge({
-  hashtagId,
-  igId,
-  pageToken,
-  edge = "top_media",
-  limit = 50,
-}) {
+/**
+ * 拉取某个 endpoint（top_media / recent_media），带简单分页
+ */
+async function fetchHashtagEdge(hashtagId, igId, pageToken, edge = "top_media", limit = 50) {
   const base = `https://graph.facebook.com/v23.0/${hashtagId}/${edge}`;
   const fields = "id,caption,media_type,media_url,permalink,timestamp";
   let collected = [];
   let nextUrl = `${base}?user_id=${igId}&fields=${encodeURIComponent(fields)}&access_token=${pageToken}`;
 
   while (nextUrl && collected.length < limit) {
-    const res = await safeFetch(nextUrl);
+    const res = await fetch(nextUrl);
     const json = await res.json();
-
     if (!json.data) {
       console.warn(`⚠️ ${edge} 接口无数据:`, json);
       break;
     }
-    collected.push(...json.data);
+    collected = collected.concat(json.data);
+    // 分页
     nextUrl = json.paging?.next || null;
   }
 
   return collected.slice(0, limit);
 }
 
-/* ========== 3) 入口函数 ========== */
 /**
  * 抓取 hashtag UGC
  * @param {object} options
- * @param {string} options.tag           话题名（不带 #），默认 env.HASHTAG 或 "acumencamera"
- * @param {"top"|"recent"|"both"} options.strategy  抓热门/最新/二者合并
- * @param {number} options.limit         最大条数（合并后也会截断到该值）
- * @param {string} options.outfile       输出文件路径
+ * @param {string} options.tag - 话题名（不带 #），默认取 env HASHTAG 或 "acumencamera"
+ * @param {"top"|"recent"|"both"} options.strategy - 抓热门/最新/二者合并
+ * @param {number} options.limit - 最大条数
+ * @param {string} options.outfile - 输出文件
  */
 export async function fetchHashtagUGC({
   tag = DEFAULT_TAG,
@@ -94,7 +101,7 @@ export async function fetchHashtagUGC({
 } = {}) {
   try {
     if (!PAGE_TOKEN || !IG_ID) {
-      throw new Error("缺少环境变量：PAGE_TOKEN 或 INSTAGRAM_IG_ID");
+      throw new Error("缺少 PAGE_TOKEN 或 INSTAGRAM_IG_ID 环境变量");
     }
 
     const hashtagId = await getHashtagId(tag, IG_ID, PAGE_TOKEN);
@@ -105,58 +112,35 @@ export async function fetchHashtagUGC({
 
     let items = [];
     if (strategy === "top" || strategy === "both") {
-      const top = await fetchHashtagEdge({
-        hashtagId,
-        igId: IG_ID,
-        pageToken: PAGE_TOKEN,
-        edge: "top_media",
-        limit,
-      });
-      items.push(...top);
+      const top = await fetchHashtagEdge(hashtagId, IG_ID, PAGE_TOKEN, "top_media", limit);
+      items = items.concat(top);
     }
     if (strategy === "recent" || strategy === "both") {
-      const recent = await fetchHashtagEdge({
-        hashtagId,
-        igId: IG_ID,
-        pageToken: PAGE_TOKEN,
-        edge: "recent_media",
-        limit,
-      });
-      items.push(...recent);
+      const recent = await fetchHashtagEdge(hashtagId, IG_ID, PAGE_TOKEN, "recent_media", limit);
+      items = items.concat(recent);
     }
 
-    // 按 id 去重，并按时间倒序
-    const dedupMap = new Map();
-    for (const m of items) dedupMap.set(m.id, m);
-    const normalized = Array.from(dedupMap.values())
+    // 去重（按 id）
+    const map = new Map();
+    for (const m of items) map.set(m.id, m);
+    const deduped = Array.from(map.values())
       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-      .slice(0, limit)
-      .map((item) => ({
-        id: item.id,
-        media_url: item.media_url,
-        caption: item.caption || "",
-        permalink: item.permalink,
-        timestamp: item.timestamp,
-        media_type: item.media_type,
-        hashtag: tag,
-      }));
-    const payload = JSON.stringify(normalized, null, 2);
-    await atomicWrite(outfile, payload);   // ← 用原子写替换 writeFile
+      .slice(0, limit);
+
+    const normalized = deduped.map((item) => ({
+      id: item.id,
+      media_url: item.media_url,
+      caption: item.caption || "",
+      permalink: item.permalink,
+      timestamp: item.timestamp,
+      media_type: item.media_type,
+      hashtag: tag,
+      username: item.username
+    }));
+
+    await fs.writeFile(outfile, JSON.stringify(normalized, null, 2), "utf-8");
     console.log(`✅ 已抓取 #${tag} 共 ${normalized.length} 条（strategy=${strategy}）`);
   } catch (err) {
-    console.error("❌ fetchHashtagUGC 出错：", err);
+    console.error("❌ 抓取 Hashtag UGC 出错:", err);
   }
-}
-
-/* ========== 4) 允许 CLI 直接运行（可选）==========
-   例：node app/lib/fetchHashtagUGC.js acumencamera both 80 public/hashtag_ugc.json
-*/
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const [tag = DEFAULT_TAG, strategy = "top", limitArg = "50", outfile = "public/hashtag_ugc.json"] =
-    process.argv.slice(2);
-  const limit = Number(limitArg) || 50;
-
-  fetchHashtagUGC({ tag, strategy, limit, outfile }).catch((e) =>
-    console.error("❌ CLI 运行失败：", e)
-  );
 }
