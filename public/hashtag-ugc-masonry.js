@@ -7,7 +7,8 @@
     "https://ugc.acumen-camera.com";
 
   const API_HASHTAG = `${API_BASE}/api-hashtag-ugc`;
-  const API_OEMBED = `${API_BASE}/api-ig-oembed`;
+  const API_OEMBED  = `${API_BASE}/api-ig-oembed`;
+  const API_DETAIL  = `${API_BASE}/api-ugc-media-detail`; // ✅ 新增：弹窗用三层兜底接口
 
   const TARGETS = {
     camping: document.querySelector("#ugc-camping"),
@@ -17,6 +18,9 @@
     documentation: document.querySelector("#ugc-documentation"),
     events: document.querySelector("#ugc-events"),
   };
+
+  // 轻量缓存：按 id 存 admin 列表里的条目，供弹窗兜底
+  const ITEM_CACHE = new Map();
 
   const css = `
   .ugc-masonry { column-count: 1; column-gap: 16px; }
@@ -29,13 +33,15 @@
   .ugc-caption { padding: 12px; font-size: 14px; line-height: 1.5; color:#333; }
   .ugc-loadmore { margin: 16px auto 0; display:block; padding:10px 16px; border:1px solid #ddd; background:#fff; border-radius:6px; cursor:pointer; }
   .ugc-empty { color:#999; font-size:14px; padding:16px 0; text-align:center; }
+
+  /* Modal */
   .igm[hidden]{display:none}
   .igm{position:fixed;inset:0;z-index:9999}
   .igm__bg{position:absolute;inset:0;background:rgba(0,0,0,.55)}
   .igm__dlg{position:absolute;inset:5% 8%;background:#fff;border-radius:12px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 10px 30px rgba(0,0,0,.18)}
   .igm__x{position:absolute;top:10px;right:10px;font-size:24px;background:#fff;border:1px solid #eee;border-radius:50%;width:36px;height:36px;cursor:pointer}
   .igm__body{flex:1;display:flex;align-items:center;justify-content:center;min-height:300px;padding:0}
-  .igm__body img,.igm__body iframe{max-width:100%;max-height:80vh;display:block}
+  .igm__body img,.igm__body iframe,.igm__body video{max-width:100%;max-height:80vh;display:block}
   .igm__actions{padding:12px;border-top:1px solid #eee;display:flex;justify-content:flex-end;gap:8px}
   .igm__btn{padding:8px 12px;border:1px solid #ddd;border-radius:8px;background:#fff}
   .igm__wrap{position:relative}
@@ -90,31 +96,61 @@
     document.body.appendChild(s);
   }
 
-  async function showLightbox(permalink, type) {
+  // 弹窗三层兜底：优先 /api-ugc-media-detail → 失败用 /api-ig-oembed → 最后用 admin 缓存
+  async function openLightboxById(mediaId) {
+    const adminFallback = ITEM_CACHE.get(mediaId) || {};
+    const permalink = adminFallback.permalink || "";
     modalOpen.href = permalink || "#";
     modalBody.innerHTML = '<div style="padding:40px;color:#999">Loading…</div>';
+    openModal();
 
+    // A) 详细接口（Graph 优先，服务端已做三层兜底）
     try {
-      const r = await fetch(`${API_OEMBED}?url=${encodeURIComponent(permalink)}`);
-      const j = await r.json();
-
-      if (type === "VIDEO") {
-        modalBody.innerHTML = `<div class="igm__wrap">${
-          j.html || ""
-        }<div class="igm__shield" title="Open in Instagram via the button below"></div></div>`;
-        ensureEmbedJs();
-      } else {
-        const src = j.thumbnail_url || "";
-        modalBody.innerHTML = src
-          ? `<img src="${src}" alt="">`
-          : `<div style="padding:40px">Failed to load</div>`;
+      const r = await fetch(`${API_DETAIL}?media_id=${encodeURIComponent(mediaId)}`, { mode: "cors" });
+      if (r.ok) {
+        const j = await r.json();
+        // 尽量原样呈现（视频优先用直链，图用直链或缩略图）
+        if (j.media_type === "VIDEO" && j.media_url) {
+          modalBody.innerHTML = `<video controls playsinline preload="metadata"><source src="${j.media_url}" type="video/mp4"></video>`;
+        } else {
+          const img = j.media_url || j.thumbnail_url || adminFallback.media_url || adminFallback.thumbnail_url || "";
+          modalBody.innerHTML = img ? `<img src="${img}" alt="">` : `<div style="padding:40px">No media.</div>`;
+        }
+        if (j.permalink || permalink) modalOpen.href = j.permalink || permalink;
+        return; // ✅ 成功则结束
       }
     } catch (e) {
-      modalBody.innerHTML = `<div style="padding:40px">Error: ${String(
-        e?.message || e
-      )}</div>`;
+      // 忽略，进入下一层
+      console.info("detail api failed, fallback to oEmbed/admin:", e);
     }
-    openModal();
+
+    // B) oEmbed（需要 permalink）
+    if (permalink) {
+      try {
+        const r = await fetch(`${API_OEMBED}?url=${encodeURIComponent(permalink)}`, { mode: "cors" });
+        if (r.ok) {
+          const j = await r.json();
+          // video 用 iframe（遮罩防点击外跳）；image 用缩略
+          if (j.html && /<video/i.test(j.html)) {
+            modalBody.innerHTML = `<div class="igm__wrap">${j.html}<div class="igm__shield" title="Open in Instagram via the button below"></div></div>`;
+            ensureEmbedJs();
+          } else {
+            const src = j.thumbnail_url || adminFallback.media_url || adminFallback.thumbnail_url || "";
+            modalBody.innerHTML = src ? `<img src="${src}" alt="">` : `<div style="padding:40px">Unable to load.</div>`;
+          }
+          return; // ✅
+        }
+      } catch (e) {
+        console.info("oEmbed failed, fallback to admin:", e);
+      }
+    }
+
+    // C) Admin 最后一层
+    const fallback =
+      adminFallback.media_url || adminFallback.thumbnail_url || "";
+    modalBody.innerHTML = fallback
+      ? `<img src="${fallback}" alt="">`
+      : `<div style="padding:40px">No media available.</div>`;
   }
 
   class MasonryList {
@@ -145,20 +181,15 @@
       this.container.appendChild(this.wrap);
       this.container.appendChild(this.loadMoreBtn);
 
-      // 事件代理：只绑定一次
-      this.wrap.addEventListener(
-        "click",
-        (e) => {
-          const btn = e.target.closest(".ugc-open");
-          if (!btn) return;
-          e.preventDefault();
-          const card = btn.closest(".ugc-card");
-          const link = card?.dataset.link || "";
-          const type = card?.dataset.type || "IMAGE";
-          if (link) showLightbox(link, type);
-        },
-        { once: true }
-      );
+      // 事件代理：点击卡片按钮 => 按 id 打开弹窗（走三层兜底）
+      this.wrap.addEventListener("click", (e) => {
+        const btn = e.target.closest(".ugc-open");
+        if (!btn) return;
+        e.preventDefault();
+        const card = btn.closest(".ugc-card");
+        const id = card?.dataset.id;
+        if (id) openLightboxById(id);
+      });
     }
 
     async loadMore() {
@@ -195,7 +226,7 @@
     }
 
     async fetchPage(offset) {
-      // 如果 admin 已把富字段存入文件，建议 noRefetch=1 彻底不打 Graph
+      // 用 admin 的富字段渲染 → 不再强制服务端重打 Graph（避免 Dev/Limited 权限导致空）
       const url = `${API_HASHTAG}?category=${encodeURIComponent(
         this.category
       )}&limit=${this.pageSize}&offset=${offset}&noRefetch=1`;
@@ -206,28 +237,43 @@
 
     appendItem(item) {
       if (!this.wrap) return;
-    
+
+      // 写入本地缓存，供弹窗兜底
+      ITEM_CACHE.set(item.id, item);
+
       const card = document.createElement("div");
       card.className = "ugc-card";
+      card.dataset.id = item.id; // ✅ 弹窗用
       card.dataset.type = item.media_type || "IMAGE";
-      card.dataset.link = item.permalink || "#";
-    
+      // card.dataset.link = item.permalink || "#"; // 弹窗现在按 id 走三层兜底，不再直接用 link
+
       const mediaUrl = item.media_url || item.thumbnail_url || "";
       if (!mediaUrl) return;
-    
+
       const mediaHtml =
         item.media_type === "VIDEO"
           ? `<img class="ugc-media-wrap" src="${mediaUrl}" alt="">`
           : `<img class="ugc-media-wrap" src="${mediaUrl}" alt="">`;
-    
-      const author = item.author ? `<div class="ugc-caption" style="color:#666;font-size:12px;margin-top:-6px;">@${escapeHtml(item.author)}</div>` : "";
-    
+
+      const author =
+        item.username || item.author
+          ? `<div class="ugc-caption" style="color:#666;font-size:12px;margin-top:-6px;">
+               @${escapeHtml(item.username || item.author)}
+             </div>`
+          : "";
+
       card.innerHTML = `
         <button class="ugc-open" type="button">
           ${mediaHtml}
         </button>
-        ${ item.caption ? `<div class="ugc-caption">${escapeHtml(item.caption.slice(0, 200))}</div>` : "" }
-        ${ author }
+        ${
+          item.caption
+            ? `<div class="ugc-caption">${escapeHtml(
+                (item.caption || "").slice(0, 200)
+              )}</div>`
+            : ""
+        }
+        ${author}
       `;
       this.wrap.appendChild(card);
     }
