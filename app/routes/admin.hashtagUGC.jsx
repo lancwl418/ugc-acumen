@@ -128,6 +128,16 @@ export default function AdminHashtagUGC() {
   return (
     <Page title="🏷️ Hashtag UGC 管理">
       <fetcher.Form method="post">
+         <div style={{ marginTop: 24 }}>
+          <Button primary submit>
+            ✅ 保存展示项
+          </Button>
+          {fetcher.state === "idle" && fetcher.data?.ok && (
+            <Text variant="bodyMd" tone="success">
+              ✅ 保存成功！
+            </Text>
+          )}
+        </div>
         <div
           style={{
             display: "grid",
