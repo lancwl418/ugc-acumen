@@ -25,7 +25,7 @@ import {
 } from "../lib/persistPaths.js";
 
 import { fetchHashtagUGC } from "../lib/fetchHashtagUGC.js";
-import { fetchTagUGC } from "../lib/fetchTagUGC.js";
+import { fetchTagUGC } from "../lib/fetchHashtagUGC.js";
 
 /* ----------------- 配置：分类选项 ----------------- */
 const CATEGORY_OPTIONS = [
