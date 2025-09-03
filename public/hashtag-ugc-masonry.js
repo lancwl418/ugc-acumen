@@ -259,10 +259,22 @@
       card.dataset.id = item.id;
       card.dataset.type = item.media_type || "IMAGE";
 
+      // ----- 媒体挑选 & 渲染（修正：VIDEO 用 <video>） -----
       const mediaUrl = item.media_url || item.thumbnail_url || "";
-      if (!mediaUrl) return;
+      const isVideo = (item.media_type === "VIDEO");
+      const isMp4   = /\.mp4(\?|$)/i.test(mediaUrl);
 
-      const mediaHtml = `<img class="ugc-media-wrap" src="${mediaUrl}" alt="">`;
+      // 有些 VIDEO 只有缩略图（thumbnail_url），也要兜底为 <img>
+      let mediaHtml = "";
+      if (isVideo && isMp4) {
+        mediaHtml = `
+          <video class="ugc-media-wrap" muted playsinline loop preload="metadata">
+            <source src="${mediaUrl}" type="video/mp4" />
+          </video>`;
+      } else {
+        mediaHtml = `<img class="ugc-media-wrap" src="${mediaUrl}" alt="">`;
+      }
+
       const author =
         item.username
           ? `<div class="ugc-caption" style="color:#666;font-size:12px;margin-top:-6px;">
