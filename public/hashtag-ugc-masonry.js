@@ -268,7 +268,7 @@
       let mediaHtml = "";
       if (isVideo && isMp4) {
         mediaHtml = `
-          <video controlsclass="ugc-media-wrap" autoplay muted playsinline loop preload="metadata">
+          <video controls class="ugc-media-wrap" autoplay muted playsinline loop preload="metadata">
             <source src="${mediaUrl}" type="video/mp4" />
           </video>`;
       } else {
