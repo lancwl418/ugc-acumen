@@ -5,7 +5,7 @@ import {
   VISIBLE_TAG_PATH,
   ensureVisibleTagFile,
 } from "../lib/persistPaths.js";
-import { resolveManyTag } from "../lib/tagResolver.server.js";
+import { resolveManyTag } from "../lib/ugcResolverTag.server.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
