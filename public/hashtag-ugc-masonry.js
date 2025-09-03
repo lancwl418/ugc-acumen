@@ -6,22 +6,26 @@
     (SCRIPT && SCRIPT.getAttribute("data-api-base")) ||
     "https://ugc.acumen-camera.com";
 
-  const API_HASHTAG = `${API_BASE}/api-hashtag-ugc`;
-  const API_OEMBED  = `${API_BASE}/api-ig-oembed`;
-  const API_DETAIL  = `${API_BASE}/api-ugc-media-detail`; // ✅ 新增：弹窗用三层兜底接口
+  // 后端接口
+  const API_HASHTAG = `${API_BASE}/api-hashtag-ugc`;      // Hashtag 可见清单
+  const API_TAG     = `${API_BASE}/api-tag-ugc`;          // ✅ 新增：Tag/Mentions 可见清单
+  const API_OEMBED  = `${API_BASE}/api-ig-oembed`;        // oEmbed 代理
+  const API_DETAIL  = `${API_BASE}/api-ugc-media-detail`; // 弹窗详细三层兜底
 
+  // 分类容器
   const TARGETS = {
-    camping: document.querySelector("#ugc-camping"),
-    "off-road": document.querySelector("#ugc-off-road"),
-    electronic: document.querySelector("#ugc-electronic"),
-    travel: document.querySelector("#ugc-travel"),
-    documentation: document.querySelector("#ugc-documentation"),
-    events: document.querySelector("#ugc-events"),
+    camping:        document.querySelector("#ugc-camping"),
+    "off-road":     document.querySelector("#ugc-off-road"),
+    electronic:     document.querySelector("#ugc-electronic"),
+    travel:         document.querySelector("#ugc-travel"),
+    documentation:  document.querySelector("#ugc-documentation"),
+    events:         document.querySelector("#ugc-events"),
   };
 
   // 轻量缓存：按 id 存 admin 列表里的条目，供弹窗兜底
   const ITEM_CACHE = new Map();
 
+  // 样式
   const css = `
   .ugc-masonry { column-count: 1; column-gap: 16px; }
   @media (min-width: 640px) { .ugc-masonry { column-count: 2; } }
@@ -51,7 +55,7 @@
   style.innerHTML = css;
   document.head.appendChild(style);
 
-  // Modal
+  /* ---------------- Modal ---------------- */
   const modal = document.createElement("div");
   modal.id = "ig-modal";
   modal.className = "igm";
@@ -109,7 +113,6 @@
       const r = await fetch(`${API_DETAIL}?media_id=${encodeURIComponent(mediaId)}`, { mode: "cors" });
       if (r.ok) {
         const j = await r.json();
-        // 尽量原样呈现（视频优先用直链，图用直链或缩略图）
         if (j.media_type === "VIDEO" && j.media_url) {
           modalBody.innerHTML = `<video controls playsinline preload="metadata"><source src="${j.media_url}" type="video/mp4"></video>`;
         } else {
@@ -117,10 +120,9 @@
           modalBody.innerHTML = img ? `<img src="${img}" alt="">` : `<div style="padding:40px">No media.</div>`;
         }
         if (j.permalink || permalink) modalOpen.href = j.permalink || permalink;
-        return; // ✅ 成功则结束
+        return; // ✅
       }
     } catch (e) {
-      // 忽略，进入下一层
       console.info("detail api failed, fallback to oEmbed/admin:", e);
     }
 
@@ -130,7 +132,6 @@
         const r = await fetch(`${API_OEMBED}?url=${encodeURIComponent(permalink)}`, { mode: "cors" });
         if (r.ok) {
           const j = await r.json();
-          // video 用 iframe（遮罩防点击外跳）；image 用缩略
           if (j.html && /<video/i.test(j.html)) {
             modalBody.innerHTML = `<div class="igm__wrap">${j.html}<div class="igm__shield" title="Open in Instagram via the button below"></div></div>`;
             ensureEmbedJs();
@@ -138,7 +139,7 @@
             const src = j.thumbnail_url || adminFallback.media_url || adminFallback.thumbnail_url || "";
             modalBody.innerHTML = src ? `<img src="${src}" alt="">` : `<div style="padding:40px">Unable to load.</div>`;
           }
-          return; // ✅
+          return;
         }
       } catch (e) {
         console.info("oEmbed failed, fallback to admin:", e);
@@ -153,18 +154,17 @@
       : `<div style="padding:40px">No media available.</div>`;
   }
 
+  /* ---------------- Masonry ---------------- */
   class MasonryList {
     constructor(container, category, pageSize = 24) {
       this.container = container;
       this.category = category;
       this.pageSize = pageSize;
-      this.offset = 0;
+      this.offset = 0;        // 同步用于 hashtag & tag 两个接口
       this.total = 0;
 
       if (!this.container) {
-        console.warn(
-          `[Hashtag UGC] container for "${category}" not found, skip.`
-        );
+        console.warn(`[UGC] container for "${category}" not found, skip.`);
         this.disabled = true;
         return;
       }
@@ -181,7 +181,7 @@
       this.container.appendChild(this.wrap);
       this.container.appendChild(this.loadMoreBtn);
 
-      // 事件代理：点击卡片按钮 => 按 id 打开弹窗（走三层兜底）
+      // 事件代理：点击卡片 => 按 media_id 打开弹窗（走三层兜底）
       this.wrap.addEventListener("click", (e) => {
         const btn = e.target.closest(".ugc-open");
         if (!btn) return;
@@ -199,10 +199,12 @@
         const data = await this.fetchPage(this.offset);
         const list = data.media || [];
         const failed = data.failed || [];
+        // total 用两边 total 之和，尽量把两类都吃完
         this.total = data.total || this.total;
 
-        if (failed.length)
-          console.info(`[Hashtag UGC] ${this.category} failed:`, failed);
+        if (failed.length) {
+          console.info(`[UGC] ${this.category} partial failed:`, failed);
+        }
 
         if (!list.length) {
           if (this.offset === 0) {
@@ -221,31 +223,49 @@
         this.loadMoreBtn.style.display =
           this.offset >= this.total ? "none" : "inline-block";
       } catch (err) {
-        console.error(`[Hashtag UGC] fetch error (${this.category}):`, err);
+        console.error(`[UGC] fetch error (${this.category}):`, err);
       }
     }
 
     async fetchPage(offset) {
-      // 用 admin 的富字段渲染 → 不再强制服务端重打 Graph（避免 Dev/Limited 权限导致空）
-      const url = `${API_HASHTAG}?category=${encodeURIComponent(
-        this.category
-      )}&limit=${this.pageSize}&offset=${offset}&noRefetch=1`;
-      const res = await fetch(url, { mode: "cors" });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      return res.json();
+      // 读取 hashtag & tag 两类可见清单，服务端已按 category 过滤
+      const qs = `category=${encodeURIComponent(this.category)}&limit=${this.pageSize}&offset=${offset}&noRefetch=1`;
+      const [rHashtag, rTag] = await Promise.allSettled([
+        fetch(`${API_HASHTAG}?${qs}`, { mode: "cors" }),
+        fetch(`${API_TAG}?${qs}`,     { mode: "cors" }),
+      ]);
+
+      let hashtag = { media: [], total: 0, failed: [] };
+      let tag     = { media: [], total: 0, failed: [] };
+
+      if (rHashtag.status === "fulfilled" && rHashtag.value.ok) {
+        hashtag = await rHashtag.value.json();
+      }
+      if (rTag.status === "fulfilled" && rTag.value.ok) {
+        tag = await rTag.value.json();
+      }
+
+      // 合并 + 时间降序
+      const merged = [...(hashtag.media || []), ...(tag.media || [])]
+        .sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+
+      return {
+        media: merged,
+        total: (hashtag.total || 0) + (tag.total || 0),
+        failed: [...(hashtag.failed || []), ...(tag.failed || [])],
+      };
     }
 
     appendItem(item) {
       if (!this.wrap) return;
 
-      // 写入本地缓存，供弹窗兜底
+      // 写入本地缓存（弹窗兜底用）
       ITEM_CACHE.set(item.id, item);
 
       const card = document.createElement("div");
       card.className = "ugc-card";
-      card.dataset.id = item.id; // ✅ 弹窗用
+      card.dataset.id = item.id;
       card.dataset.type = item.media_type || "IMAGE";
-      // card.dataset.link = item.permalink || "#"; // 弹窗现在按 id 走三层兜底，不再直接用 link
 
       const mediaUrl = item.media_url || item.thumbnail_url || "";
       if (!mediaUrl) return;
