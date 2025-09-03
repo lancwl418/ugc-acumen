@@ -1,4 +1,4 @@
-/* public/hashtag-ugc-masonry.js */
+/* public/hashtag-ugc-masonry.js — modal 改为 acumen-* 风格 */
 (function () {
   const SCRIPT =
     document.currentScript || document.getElementById("acumen-hashtag-ugc");
@@ -42,8 +42,9 @@
     return PRODUCT_MAP;
   }
 
-  // 样式
-  const css = `
+  /* ---------------- 样式（含 masonry + 新 modal 的 acumen-* 样式） ---------------- */
+  const style = document.createElement("style");
+  style.innerHTML = `
   .ugc-masonry { column-count: 1; column-gap: 16px; }
   @media (min-width: 640px) { .ugc-masonry { column-count: 2; } }
   @media (min-width: 1024px){ .ugc-masonry { column-count: 3; } }
@@ -55,62 +56,121 @@
   .ugc-loadmore { margin: 16px auto 0; display:block; padding:10px 16px; border:1px solid #ddd; background:#fff; border-radius:6px; cursor:pointer; }
   .ugc-empty { color:#999; font-size:14px; padding:16px 0; text-align:center; }
 
-  /* Modal */
-  .igm[hidden]{display:none}
-  .igm{position:fixed;inset:0;z-index:9999}
-  .igm__bg{position:absolute;inset:0;background:rgba(0,0,0,.55)}
-  .igm__dlg{position:absolute;inset:5% 8%;background:#fff;border-radius:12px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 10px 30px rgba(0,0,0,.18);max-height:90vh}
-  .igm__x{position:absolute;top:10px;right:10px;font-size:24px;background:#fff;border:1px solid #eee;border-radius:50%;width:36px;height:36px;cursor:pointer}
-  .igm__body{flex:1;display:flex;gap:24px;min-height:300px;padding:20px;overflow:hidden}
-  .igm__media{flex:0 0 420px;align-self:flex-start}
-  .igm__mediaBox{width:420px;height:420px;border-radius:8px;background:#f6f6f6;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center}
-  .igm__mediaBox img,.igm__mediaBox video{width:100%;height:100%;object-fit:contain;display:block}
+  /* =============== acumen modal =============== */
 
-  /* carousel */
-  .igm__carousel{position:relative;width:100%;height:100%}
-  .igm__carousel-slide{position:absolute;inset:0;opacity:0;transition:opacity .25s ease}
-  .igm__carousel-slide.is-active{opacity:1}
-  .igm__carousel-btn{position:absolute;top:50%;transform:translateY(-50%);width:36px;height:36px;border-radius:50%;border:0;background:rgba(0,0,0,.5);color:#fff;cursor:pointer}
-  .igm__carousel-btn.prev{left:8px}
-  .igm__carousel-btn.next{right:8px}
+  /* 弹窗背景 */
+  .acumen-modal {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+  }
 
-  .igm__side{flex:1;min-width:0;display:flex;flex-direction:column;gap:16px;overflow:auto}
-  .igm__products{position:relative}
-  .igm__products-title{font-weight:600;font-size:20px;margin:0 0 8px}
-  .igm__pstrip{display:flex;gap:12px;overflow:auto;scrollbar-width:none;padding-bottom:6px}
-  .igm__pstrip::-webkit-scrollbar{display:none}
-  .igm__pcard{min-width:260px;max-width:260px;display:flex;gap:10px;border:1px solid #eee;border-radius:10px;padding:12px;align-items:flex-start;background:#fff}
-  .igm__pcard img{width:64px;height:64px;object-fit:cover;border-radius:6px}
-  .igm__pcard-title{font-size:14px;line-height:1.35;margin:0 0 4px}
-  .igm__pcard-price{color:#d45a20;font-weight:600;font-size:14px;margin:0 0 4px}
-  .igm__plink{font-size:12px;text-decoration:underline;color:#2563eb}
-  .igm__ps-btn{position:absolute;top:28px;transform:translateY(-50%);width:30px;height:30px;border-radius:50%;border:0;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.1);cursor:pointer}
-  .igm__ps-btn.prev{left:-8px}
-  .igm__ps-btn.next{right:-8px}
+  /* 弹窗主体（左右布局） */
+  .acumen-modal-content {
+    position: relative;
+    background: #fff;
+    border-radius: 8px;
+    padding: 24px;
+    display: flex;
+    gap: 24px;
+    max-width: 980px;        /* 比你给的略宽一些，右侧信息更舒展 */
+    max-height: 80vh;
+    overflow: hidden;
+    font-family: Arial, sans-serif;
+  }
 
-  .igm__caption{font-size:14px;line-height:1.6;color:#333;white-space:pre-wrap}
-  .igm__author{font-weight:600;margin-right:6px}
-  .igm__original a{font-size:14px;color:#2563eb;text-decoration:underline}
+  /* 左侧媒体区域固定宽高 */
+  .acumen-media {
+    flex: 0 0 320px;
+  }
+  .acumen-mediaBox{
+    width:320px; height:400px;
+    border-radius:8px;
+    background:#f6f6f6;
+    position:relative; overflow:hidden;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .acumen-mediaBox img, .acumen-mediaBox video{
+    width:100%; height:100%; object-fit:contain; display:block;
+  }
+
+  /* 轮播 */
+  .acumen-carousel{position:relative;width:100%;height:100%}
+  .acumen-slide{position:absolute;inset:0;opacity:0;transition:opacity .25s ease}
+  .acumen-slide.is-active{opacity:1}
+  .acumen-cbtn{position:absolute;top:50%;transform:translateY(-50%);width:36px;height:36px;border-radius:50%;border:0;background:rgba(0,0,0,.5);color:#fff;cursor:pointer}
+  .acumen-cbtn.prev{left:8px}
+  .acumen-cbtn.next{right:8px}
+
+  /* 右侧信息区 */
+  .acumen-modal-right {
+    flex: 1;
+    min-width:0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow: auto;
+  }
+  .acumen-modal-close {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    font-size: 28px;
+    font-weight: bold;
+    color: #333;
+    cursor: pointer;
+    line-height: 1;
+  }
+  .acumen-modal-close:hover { color: red; }
+
+  /* 相关产品（横滑条 + 按钮） */
+  .acumen-products{position:relative}
+  .acumen-products h4{margin:0 0 8px}
+  .acumen-pstrip{display:flex;gap:12px;overflow:auto;scrollbar-width:none;padding-bottom:6px}
+  .acumen-pstrip::-webkit-scrollbar{display:none}
+  .acumen-ps-btn{position:absolute;top:16px;transform:translateY(-50%);width:30px;height:30px;border-radius:50%;border:0;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.1);cursor:pointer}
+  .acumen-ps-btn.prev{left:-8px}
+  .acumen-ps-btn.next{right:-8px}
+
+  /* 产品卡片（沿用你的命名） */
+  .ugc-product-card {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px; border: 1px solid #eee; border-radius: 6px;
+    min-width: 260px; max-width: 260px; background:#fff;
+  }
+  .ugc-product-card img {
+    width: 60px; height: 60px; object-fit: cover; border-radius: 4px;
+  }
+  .ugc-product-card a {
+    font-size: 12px; color: #007bff; text-decoration: underline;
+  }
+  .ugc-product-title{font-size:14px;line-height:1.35;margin:0 0 4px}
+  .ugc-product-price{color:#d45a20;font-weight:600;font-size:14px;margin:0 0 4px}
+
+  /* 作者 + caption */
+  .acumen-caption{font-size:14px;line-height:1.6;color:#333;white-space:pre-wrap}
+  .acumen-author{font-weight:600;margin-right:6px}
+  .acumen-original a{font-size:14px;color:#007bff;text-decoration:underline}
   `;
-  const style = document.createElement("style");
-  style.innerHTML = css;
   document.head.appendChild(style);
 
-  /* ---------------- Modal DOM ---------------- */
+  /* ---------------- Modal 容器 ---------------- */
   const modal = document.createElement("div");
-  modal.id = "ig-modal";
-  modal.className = "igm";
+  modal.className = "acumen-modal";
   modal.hidden = true;
   modal.innerHTML = `
-    <div class="igm__bg" data-close></div>
-    <div class="igm__dlg" role="dialog" aria-modal="true">
-      <button class="igm__x" type="button" data-close>&times;</button>
-      <div id="ig-modal-body" class="igm__body"></div>
+    <div class="acumen-modal-content" role="dialog" aria-modal="true">
+      <span class="acumen-modal-close" data-close>&times;</span>
+      <div id="acumen-modal-body" style="display:flex;gap:24px;flex:1;min-width:0;"></div>
     </div>`;
   document.body.appendChild(modal);
-  const modalBody = modal.querySelector("#ig-modal-body");
+  const modalBody = modal.querySelector("#acumen-modal-body");
   modal.addEventListener("click", (e) => {
-    if (e.target.hasAttribute("data-close")) closeModal();
+    if (e.target.hasAttribute("data-close") || e.target === modal) closeModal();
   });
   function openModal() {
     modal.hidden = false;
@@ -120,6 +180,115 @@
     modal.hidden = true;
     modalBody.innerHTML = "";
     document.body.style.overflow = "";
+  }
+
+  /* ---------------- 媒体渲染（按 acumen-*） ---------------- */
+  function renderCarousel(children = []) {
+    const slides = children
+      .map((c, i) => {
+        const url = c.media_url || c.thumbnail_url || "";
+        const isVid = c.media_type === "VIDEO" && /\.mp4(\?|$)/i.test(url);
+        if (isVid) {
+          return `<div class="acumen-slide ${i === 0 ? "is-active" : ""}">
+            <video autoplay muted playsinline controls preload="metadata">
+              <source src="${url}" type="video/mp4" />
+            </video>
+          </div>`;
+        }
+        return `<div class="acumen-slide ${i === 0 ? "is-active" : ""}">
+          <img src="${url}" alt="" />
+        </div>`;
+      })
+      .join("");
+
+    return `
+      <div class="acumen-mediaBox">
+        <div class="acumen-carousel">
+          ${slides}
+          ${children.length > 1 ? `
+            <button class="acumen-cbtn prev" type="button" aria-label="Prev">&#9664;</button>
+            <button class="acumen-cbtn next" type="button" aria-label="Next">&#9654;</button>
+          ` : ""}
+        </div>
+      </div>`;
+  }
+
+  function bindCarouselEvents(root) {
+    const slides = Array.from(root.querySelectorAll(".acumen-slide"));
+    if (slides.length <= 1) return;
+    let idx = slides.findIndex(s => s.classList.contains("is-active"));
+    const go = (d) => {
+      slides[idx].classList.remove("is-active");
+      idx = (idx + d + slides.length) % slides.length;
+      slides[idx].classList.add("is-active");
+    };
+    root.querySelector(".acumen-cbtn.prev")?.addEventListener("click", () => go(-1));
+    root.querySelector(".acumen-cbtn.next")?.addEventListener("click", () => go(+1));
+  }
+
+  function renderSingleMedia(detailOrItem) {
+    const url = detailOrItem.media_url || detailOrItem.thumbnail_url || "";
+    const isVideo = (detailOrItem.media_type === "VIDEO") && /\.mp4(\?|$)/i.test(url);
+    if (isVideo) {
+      return `
+        <div class="acumen-mediaBox">
+          <video muted playsinline autoplay controls preload="metadata">
+            <source src="${url}" type="video/mp4" />
+          </video>
+        </div>`;
+    }
+    return `
+      <div class="acumen-mediaBox">
+        <img src="${url}" alt="" />
+      </div>`;
+  }
+
+  function mediaHTML(detail, fallback) {
+    const children =
+      detail?.children?.data?.length ? detail.children.data :
+      (fallback?.children?.data?.length ? fallback.children.data : null);
+
+    if (children && children.length) return renderCarousel(children);
+    if (detail && (detail.media_url || detail.thumbnail_url)) return renderSingleMedia(detail);
+    if (fallback && (fallback.media_url || fallback.thumbnail_url)) return renderSingleMedia(fallback);
+    return `<div class="acumen-mediaBox"></div>`;
+  }
+
+  /* ---------------- 产品渲染（按示例风格） ---------------- */
+  function productsHTML(handles = [], productMap = {}) {
+    const items = (handles || [])
+      .map(h => productMap[h])
+      .filter(Boolean);
+    if (!items.length) return "";
+
+    const cards = items.map(p => `
+      <div class="ugc-product-card">
+        <img src="${p.image}" alt="${escapeHtml(p.title)}" />
+        <div>
+          <div class="ugc-product-title">${escapeHtml(p.title)}</div>
+          ${p.price ? `<div class="ugc-product-price">$${p.price}</div>` : ""}
+          <a href="${p.link}" target="_blank" rel="noopener">View More</a>
+        </div>
+      </div>
+    `).join("");
+
+    return `
+      <div class="acumen-products">
+        <h4>Related Products</h4>
+        <button class="acumen-ps-btn prev" type="button" aria-label="Prev">&#9664;</button>
+        <div class="acumen-pstrip">${cards}</div>
+        <button class="acumen-ps-btn next" type="button" aria-label="Next">&#9654;</button>
+      </div>`;
+  }
+
+  function bindProductsStrip(root) {
+    const strip = root.querySelector(".acumen-pstrip");
+    if (!strip) return;
+    const prev = root.querySelector(".acumen-ps-btn.prev");
+    const next = root.querySelector(".acumen-ps-btn.next");
+    const step = 280;
+    prev?.addEventListener("click", () => strip.scrollBy({ left: -step, behavior: "smooth" }));
+    next?.addEventListener("click", () => strip.scrollBy({ left: step, behavior: "smooth" }));
   }
 
   function ensureEmbedJs() {
@@ -137,163 +306,38 @@
     document.body.appendChild(s);
   }
 
-  /* ---------------- Rich Modal Rendering ---------------- */
-  function renderCarousel(children = []) {
-    const slides = children
-      .map((c, i) => {
-        const url = c.media_url || c.thumbnail_url || "";
-        const isVid = c.media_type === "VIDEO" && /\.mp4(\?|$)/i.test(url);
-        if (isVid) {
-          return `<div class="igm__carousel-slide ${i === 0 ? "is-active" : ""}">
-            <video autoplay muted playsinline controls preload="metadata" class="w-full h-full">
-              <source src="${url}" type="video/mp4" />
-            </video>
-          </div>`;
-        }
-        return `<div class="igm__carousel-slide ${i === 0 ? "is-active" : ""}">
-          <img src="${url}" alt="" />
-        </div>`;
-      })
-      .join("");
-
-    return `
-      <div class="igm__mediaBox">
-        <div class="igm__carousel">
-          ${slides}
-          ${children.length > 1 ? `
-            <button class="igm__carousel-btn prev" type="button" aria-label="Prev">&#9664;</button>
-            <button class="igm__carousel-btn next" type="button" aria-label="Next">&#9654;</button>
-          ` : ""}
-        </div>
-      </div>`;
-  }
-
-  function bindCarouselEvents(box) {
-    const slides = Array.from(box.querySelectorAll(".igm__carousel-slide"));
-    if (slides.length <= 1) return;
-    let idx = slides.findIndex(s => s.classList.contains("is-active"));
-    const go = (d) => {
-      slides[idx].classList.remove("is-active");
-      idx = (idx + d + slides.length) % slides.length;
-      slides[idx].classList.add("is-active");
-    };
-    box.querySelector(".igm__carousel-btn.prev")?.addEventListener("click", () => go(-1));
-    box.querySelector(".igm__carousel-btn.next")?.addEventListener("click", () => go(+1));
-  }
-
-  function renderSingleMedia(detailOrItem) {
-    const url = detailOrItem.media_url || detailOrItem.thumbnail_url || "";
-    const isVideo = (detailOrItem.media_type === "VIDEO") && /\.mp4(\?|$)/i.test(url);
-    if (isVideo) {
-      return `
-        <div class="igm__mediaBox">
-          <video muted playsinline autoplay controls preload="metadata">
-            <source src="${url}" type="video/mp4" />
-          </video>
-        </div>`;
-    }
-    return `
-      <div class="igm__mediaBox">
-        <img src="${url}" alt="" />
-      </div>`;
-  }
-
-  function mediaHTML(detail, fallback) {
-    // 1) 有 children 时按轮播（优先 detail.children）
-    const children =
-      detail?.children?.data?.length ? detail.children.data :
-      (fallback?.children?.data?.length ? fallback.children.data : null);
-
-    if (children && children.length) return renderCarousel(children);
-
-    // 2) 单媒体（detail 优先）
-    if (detail && (detail.media_url || detail.thumbnail_url)) return renderSingleMedia(detail);
-    if (fallback && (fallback.media_url || fallback.thumbnail_url)) return renderSingleMedia(fallback);
-
-    // 3) oEmbed 兜底的缩略图由上层逻辑再尝试，这里先空
-    return `<div class="igm__mediaBox"></div>`;
-  }
-
-  function productsHTML(handles = [], productMap = {}) {
-    const items = (handles || [])
-      .map(h => productMap[h])
-      .filter(Boolean);
-    if (!items.length) return "";
-
-    const cards = items.map(p => `
-      <div class="igm__pcard">
-        <img src="${p.image}" alt="${escapeHtml(p.title)}" />
-        <div>
-          <div class="igm__pcard-title">${escapeHtml(p.title)}</div>
-          ${p.price ? `<div class="igm__pcard-price">$${p.price}</div>` : ""}
-          <a class="igm__plink" href="${p.link}" target="_blank" rel="noopener">View More</a>
-        </div>
-      </div>
-    `).join("");
-
-    return `
-      <div class="igm__products">
-        <h3 class="igm__products-title">Related Products</h3>
-        <button class="igm__ps-btn prev" type="button" aria-label="Prev">&#9664;</button>
-        <div class="igm__pstrip">${cards}</div>
-        <button class="igm__ps-btn next" type="button" aria-label="Next">&#9654;</button>
-      </div>`;
-  }
-
-  function bindProductsStrip(root) {
-    const strip = root.querySelector(".igm__pstrip");
-    if (!strip) return;
-    const prev = root.querySelector(".igm__ps-btn.prev");
-    const next = root.querySelector(".igm__ps-btn.next");
-    const step = 280; // 一张卡的宽度+间距
-    prev?.addEventListener("click", () => strip.scrollBy({ left: -step, behavior: "smooth" }));
-    next?.addEventListener("click", () => strip.scrollBy({ left: step, behavior: "smooth" }));
-  }
-
-  // 弹窗三层兜底（并渲染富 UI）
+  /* ---------------- 弹窗：三层兜底 + 渲染 ---------------- */
   async function openLightboxById(mediaId) {
     const adminFallback = ITEM_CACHE.get(mediaId) || {};
     let detail = null;
 
-    modalBody.innerHTML = '<div style="padding:40px;color:#999">Loading…</div>';
+    modalBody.innerHTML = '<div style="padding:20px;color:#999">Loading…</div>';
     openModal();
 
-    // A) 详细接口（Graph 优先）
     try {
       const r = await fetch(`${API_DETAIL}?media_id=${encodeURIComponent(mediaId)}`, { mode: "cors" });
       if (r.ok) detail = await r.json();
     } catch {}
 
-    // 若 detail 和 fallback 都没任何媒体，再尝试 oEmbed 照片缩略图
-    if (!detail && !adminFallback) {
-      modalBody.innerHTML = `<div style="padding:40px">No media available.</div>`;
-      return;
-    }
-
-    // 准备渲染的数据
     const username = detail?.username || adminFallback.username || "";
     const caption  = detail?.caption  || adminFallback.caption  || "";
     const permalink = detail?.permalink || adminFallback.permalink || "";
 
-    // 商品数据（handles）
     await ensureProductMap();
     const productsHTMLStr = productsHTML(adminFallback.products || [], PRODUCT_MAP);
 
-    // 媒体 HTML（carousel/single/video）
     let mediaBoxHTML = mediaHTML(detail, adminFallback);
 
-    // 如果两者都没图，再试 oEmbed 缩略图
-    if (mediaBoxHTML.includes('igm__mediaBox"></div>') && permalink) {
+    if (mediaBoxHTML.includes('acumen-mediaBox"></div>') && permalink) {
       try {
         const r = await fetch(`${API_OEMBED}?url=${encodeURIComponent(permalink)}`, { mode: "cors" });
         if (r.ok) {
           const e = await r.json();
           if (e.html && /<video/i.test(e.html)) {
-            // 直接用 embed（遮罩避免点透）
             mediaBoxHTML = `
-              <div class="igm__mediaBox">
-                <div class="igm__carousel">
-                  <div class="igm__carousel-slide is-active">
+              <div class="acumen-mediaBox">
+                <div class="acumen-carousel">
+                  <div class="acumen-slide is-active">
                     ${e.html}
                   </div>
                 </div>
@@ -301,7 +345,7 @@
             ensureEmbedJs();
           } else if (e.thumbnail_url) {
             mediaBoxHTML = `
-              <div class="igm__mediaBox">
+              <div class="acumen-mediaBox">
                 <img src="${e.thumbnail_url}" alt="">
               </div>`;
           }
@@ -309,31 +353,29 @@
       } catch {}
     }
 
-    // 渲染整体布局
     modalBody.innerHTML = `
-      <div class="igm__media">
+      <div class="acumen-media">
         ${mediaBoxHTML}
       </div>
-      <div class="igm__side">
+      <div class="acumen-modal-right">
         ${productsHTMLStr || ""}
-        <div class="igm__caption">
-          ${username ? `<span class="igm__author">@${escapeHtml(username)}</span>` : ""}
+        <div class="acumen-caption">
+          ${username ? `<span class="acumen-author">@${escapeHtml(username)}</span>` : ""}
           ${escapeHtml(caption || "No caption.")}
         </div>
-        <div class="igm__original">
+        <div class="acumen-original">
           ${permalink ? `<a href="${permalink}" target="_blank" rel="noopener">View original post</a>` : ""}
         </div>
       </div>
     `;
 
-    // 绑定交互
-    const car = modalBody.querySelector(".igm__carousel");
+    const car = modalBody.querySelector(".acumen-carousel");
     if (car) bindCarouselEvents(car);
-    const pro = modalBody.querySelector(".igm__products");
+    const pro = modalBody.querySelector(".acumen-products");
     if (pro) bindProductsStrip(pro);
   }
 
-  /* ---------------- Masonry ---------------- */
+  /* ---------------- Masonry 列表（不变） ---------------- */
   class MasonryList {
     constructor(container, category, pageSize = 24) {
       this.container = container;
@@ -452,7 +494,7 @@
       let mediaHtml = "";
       if (isVideo) {
         mediaHtml = `
-          <video class="ugc-media-wrap" controls autoplay muted playsinline loop preload="metadata">
+          <video class="ugc-media-wrap" autoplay muted playsinline loop preload="metadata">
             <source src="${mediaUrl}" type="video/mp4" />
           </video>`;
       } else {
