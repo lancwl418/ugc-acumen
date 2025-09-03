@@ -11,6 +11,7 @@
   const API_TAG     = `${API_BASE}/api-tag-ugc`;          // Tag/Mentions 可见清单
   const API_OEMBED  = `${API_BASE}/api-ig-oembed`;        // oEmbed 代理
   const API_DETAIL  = `${API_BASE}/api-ugc-media-detail`; // 弹窗详细三层兜底
+  const API_PRODUCTS = `${API_BASE}/api-products`;        // 商品数据（handle->meta）
 
   // 分类容器
   const TARGETS = {
@@ -24,6 +25,22 @@
 
   // 轻量缓存：按 id 存 admin 列表里的条目，供弹窗兜底
   const ITEM_CACHE = new Map();
+
+  // 商品缓存：handle -> {title, image, price, link}
+  let PRODUCT_MAP = null;
+  async function ensureProductMap() {
+    if (PRODUCT_MAP) return PRODUCT_MAP;
+    try {
+      const r = await fetch(API_PRODUCTS, { mode: "cors" });
+      const j = await r.json();
+      const map = {};
+      (j.products || []).forEach(p => { map[p.handle] = p; });
+      PRODUCT_MAP = map;
+    } catch {
+      PRODUCT_MAP = {};
+    }
+    return PRODUCT_MAP;
+  }
 
   // 样式
   const css = `
@@ -42,20 +59,44 @@
   .igm[hidden]{display:none}
   .igm{position:fixed;inset:0;z-index:9999}
   .igm__bg{position:absolute;inset:0;background:rgba(0,0,0,.55)}
-  .igm__dlg{position:absolute;inset:5% 8%;background:#fff;border-radius:12px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 10px 30px rgba(0,0,0,.18)}
+  .igm__dlg{position:absolute;inset:5% 8%;background:#fff;border-radius:12px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 10px 30px rgba(0,0,0,.18);max-height:90vh}
   .igm__x{position:absolute;top:10px;right:10px;font-size:24px;background:#fff;border:1px solid #eee;border-radius:50%;width:36px;height:36px;cursor:pointer}
-  .igm__body{flex:1;display:flex;align-items:center;justify-content:center;min-height:300px;padding:0}
-  .igm__body img,.igm__body iframe,.igm__body video{max-width:100%;max-height:80vh;display:block}
-  .igm__actions{padding:12px;border-top:1px solid #eee;display:flex;justify-content:flex-end;gap:8px}
-  .igm__btn{padding:8px 12px;border:1px solid #ddd;border-radius:8px;background:#fff}
-  .igm__wrap{position:relative}
-  .igm__shield{position:absolute;inset:0;background:transparent}
+  .igm__body{flex:1;display:flex;gap:24px;min-height:300px;padding:20px;overflow:hidden}
+  .igm__media{flex:0 0 420px;align-self:flex-start}
+  .igm__mediaBox{width:420px;height:420px;border-radius:8px;background:#f6f6f6;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center}
+  .igm__mediaBox img,.igm__mediaBox video{width:100%;height:100%;object-fit:contain;display:block}
+
+  /* carousel */
+  .igm__carousel{position:relative;width:100%;height:100%}
+  .igm__carousel-slide{position:absolute;inset:0;opacity:0;transition:opacity .25s ease}
+  .igm__carousel-slide.is-active{opacity:1}
+  .igm__carousel-btn{position:absolute;top:50%;transform:translateY(-50%);width:36px;height:36px;border-radius:50%;border:0;background:rgba(0,0,0,.5);color:#fff;cursor:pointer}
+  .igm__carousel-btn.prev{left:8px}
+  .igm__carousel-btn.next{right:8px}
+
+  .igm__side{flex:1;min-width:0;display:flex;flex-direction:column;gap:16px;overflow:auto}
+  .igm__products{position:relative}
+  .igm__products-title{font-weight:600;font-size:20px;margin:0 0 8px}
+  .igm__pstrip{display:flex;gap:12px;overflow:auto;scrollbar-width:none;padding-bottom:6px}
+  .igm__pstrip::-webkit-scrollbar{display:none}
+  .igm__pcard{min-width:260px;max-width:260px;display:flex;gap:10px;border:1px solid #eee;border-radius:10px;padding:12px;align-items:flex-start;background:#fff}
+  .igm__pcard img{width:64px;height:64px;object-fit:cover;border-radius:6px}
+  .igm__pcard-title{font-size:14px;line-height:1.35;margin:0 0 4px}
+  .igm__pcard-price{color:#d45a20;font-weight:600;font-size:14px;margin:0 0 4px}
+  .igm__plink{font-size:12px;text-decoration:underline;color:#2563eb}
+  .igm__ps-btn{position:absolute;top:28px;transform:translateY(-50%);width:30px;height:30px;border-radius:50%;border:0;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.1);cursor:pointer}
+  .igm__ps-btn.prev{left:-8px}
+  .igm__ps-btn.next{right:-8px}
+
+  .igm__caption{font-size:14px;line-height:1.6;color:#333;white-space:pre-wrap}
+  .igm__author{font-weight:600;margin-right:6px}
+  .igm__original a{font-size:14px;color:#2563eb;text-decoration:underline}
   `;
   const style = document.createElement("style");
   style.innerHTML = css;
   document.head.appendChild(style);
 
-  /* ---------------- Modal ---------------- */
+  /* ---------------- Modal DOM ---------------- */
   const modal = document.createElement("div");
   modal.id = "ig-modal";
   modal.className = "igm";
@@ -65,13 +106,9 @@
     <div class="igm__dlg" role="dialog" aria-modal="true">
       <button class="igm__x" type="button" data-close>&times;</button>
       <div id="ig-modal-body" class="igm__body"></div>
-      <div class="igm__actions">
-        <a id="ig-open" class="igm__btn" target="_blank" rel="noopener">View on Instagram</a>
-      </div>
     </div>`;
   document.body.appendChild(modal);
   const modalBody = modal.querySelector("#ig-modal-body");
-  const modalOpen = modal.querySelector("#ig-open");
   modal.addEventListener("click", (e) => {
     if (e.target.hasAttribute("data-close")) closeModal();
   });
@@ -100,50 +137,200 @@
     document.body.appendChild(s);
   }
 
-  // 弹窗三层兜底
+  /* ---------------- Rich Modal Rendering ---------------- */
+  function renderCarousel(children = []) {
+    const slides = children
+      .map((c, i) => {
+        const url = c.media_url || c.thumbnail_url || "";
+        const isVid = c.media_type === "VIDEO" && /\.mp4(\?|$)/i.test(url);
+        if (isVid) {
+          return `<div class="igm__carousel-slide ${i === 0 ? "is-active" : ""}">
+            <video autoplay muted playsinline controls preload="metadata" class="w-full h-full">
+              <source src="${url}" type="video/mp4" />
+            </video>
+          </div>`;
+        }
+        return `<div class="igm__carousel-slide ${i === 0 ? "is-active" : ""}">
+          <img src="${url}" alt="" />
+        </div>`;
+      })
+      .join("");
+
+    return `
+      <div class="igm__mediaBox">
+        <div class="igm__carousel">
+          ${slides}
+          ${children.length > 1 ? `
+            <button class="igm__carousel-btn prev" type="button" aria-label="Prev">&#9664;</button>
+            <button class="igm__carousel-btn next" type="button" aria-label="Next">&#9654;</button>
+          ` : ""}
+        </div>
+      </div>`;
+  }
+
+  function bindCarouselEvents(box) {
+    const slides = Array.from(box.querySelectorAll(".igm__carousel-slide"));
+    if (slides.length <= 1) return;
+    let idx = slides.findIndex(s => s.classList.contains("is-active"));
+    const go = (d) => {
+      slides[idx].classList.remove("is-active");
+      idx = (idx + d + slides.length) % slides.length;
+      slides[idx].classList.add("is-active");
+    };
+    box.querySelector(".igm__carousel-btn.prev")?.addEventListener("click", () => go(-1));
+    box.querySelector(".igm__carousel-btn.next")?.addEventListener("click", () => go(+1));
+  }
+
+  function renderSingleMedia(detailOrItem) {
+    const url = detailOrItem.media_url || detailOrItem.thumbnail_url || "";
+    const isVideo = (detailOrItem.media_type === "VIDEO") && /\.mp4(\?|$)/i.test(url);
+    if (isVideo) {
+      return `
+        <div class="igm__mediaBox">
+          <video muted playsinline autoplay controls preload="metadata">
+            <source src="${url}" type="video/mp4" />
+          </video>
+        </div>`;
+    }
+    return `
+      <div class="igm__mediaBox">
+        <img src="${url}" alt="" />
+      </div>`;
+  }
+
+  function mediaHTML(detail, fallback) {
+    // 1) 有 children 时按轮播（优先 detail.children）
+    const children =
+      detail?.children?.data?.length ? detail.children.data :
+      (fallback?.children?.data?.length ? fallback.children.data : null);
+
+    if (children && children.length) return renderCarousel(children);
+
+    // 2) 单媒体（detail 优先）
+    if (detail && (detail.media_url || detail.thumbnail_url)) return renderSingleMedia(detail);
+    if (fallback && (fallback.media_url || fallback.thumbnail_url)) return renderSingleMedia(fallback);
+
+    // 3) oEmbed 兜底的缩略图由上层逻辑再尝试，这里先空
+    return `<div class="igm__mediaBox"></div>`;
+  }
+
+  function productsHTML(handles = [], productMap = {}) {
+    const items = (handles || [])
+      .map(h => productMap[h])
+      .filter(Boolean);
+    if (!items.length) return "";
+
+    const cards = items.map(p => `
+      <div class="igm__pcard">
+        <img src="${p.image}" alt="${escapeHtml(p.title)}" />
+        <div>
+          <div class="igm__pcard-title">${escapeHtml(p.title)}</div>
+          ${p.price ? `<div class="igm__pcard-price">$${p.price}</div>` : ""}
+          <a class="igm__plink" href="${p.link}" target="_blank" rel="noopener">View More</a>
+        </div>
+      </div>
+    `).join("");
+
+    return `
+      <div class="igm__products">
+        <h3 class="igm__products-title">Related Products</h3>
+        <button class="igm__ps-btn prev" type="button" aria-label="Prev">&#9664;</button>
+        <div class="igm__pstrip">${cards}</div>
+        <button class="igm__ps-btn next" type="button" aria-label="Next">&#9654;</button>
+      </div>`;
+  }
+
+  function bindProductsStrip(root) {
+    const strip = root.querySelector(".igm__pstrip");
+    if (!strip) return;
+    const prev = root.querySelector(".igm__ps-btn.prev");
+    const next = root.querySelector(".igm__ps-btn.next");
+    const step = 280; // 一张卡的宽度+间距
+    prev?.addEventListener("click", () => strip.scrollBy({ left: -step, behavior: "smooth" }));
+    next?.addEventListener("click", () => strip.scrollBy({ left: step, behavior: "smooth" }));
+  }
+
+  // 弹窗三层兜底（并渲染富 UI）
   async function openLightboxById(mediaId) {
     const adminFallback = ITEM_CACHE.get(mediaId) || {};
-    const permalink = adminFallback.permalink || "";
-    modalOpen.href = permalink || "#";
+    let detail = null;
+
     modalBody.innerHTML = '<div style="padding:40px;color:#999">Loading…</div>';
     openModal();
 
+    // A) 详细接口（Graph 优先）
     try {
       const r = await fetch(`${API_DETAIL}?media_id=${encodeURIComponent(mediaId)}`, { mode: "cors" });
-      if (r.ok) {
-        const j = await r.json();
-        if (j.media_type === "VIDEO" && j.media_url) {
-          modalBody.innerHTML = `<video controls playsinline preload="metadata"><source src="${j.media_url}" type="video/mp4"></video>`;
-        } else {
-          const img = j.media_url || j.thumbnail_url || adminFallback.media_url || "";
-          modalBody.innerHTML = img ? `<img src="${img}" alt="">` : `<div style="padding:40px">No media.</div>`;
-        }
-        if (j.permalink || permalink) modalOpen.href = j.permalink || permalink;
-        return;
-      }
+      if (r.ok) detail = await r.json();
     } catch {}
 
-    if (permalink) {
+    // 若 detail 和 fallback 都没任何媒体，再尝试 oEmbed 照片缩略图
+    if (!detail && !adminFallback) {
+      modalBody.innerHTML = `<div style="padding:40px">No media available.</div>`;
+      return;
+    }
+
+    // 准备渲染的数据
+    const username = detail?.username || adminFallback.username || "";
+    const caption  = detail?.caption  || adminFallback.caption  || "";
+    const permalink = detail?.permalink || adminFallback.permalink || "";
+
+    // 商品数据（handles）
+    await ensureProductMap();
+    const productsHTMLStr = productsHTML(adminFallback.products || [], PRODUCT_MAP);
+
+    // 媒体 HTML（carousel/single/video）
+    let mediaBoxHTML = mediaHTML(detail, adminFallback);
+
+    // 如果两者都没图，再试 oEmbed 缩略图
+    if (mediaBoxHTML.includes('igm__mediaBox"></div>') && permalink) {
       try {
         const r = await fetch(`${API_OEMBED}?url=${encodeURIComponent(permalink)}`, { mode: "cors" });
         if (r.ok) {
-          const j = await r.json();
-          if (j.html && /<video/i.test(j.html)) {
-            modalBody.innerHTML = `<div class="igm__wrap">${j.html}<div class="igm__shield"></div></div>`;
+          const e = await r.json();
+          if (e.html && /<video/i.test(e.html)) {
+            // 直接用 embed（遮罩避免点透）
+            mediaBoxHTML = `
+              <div class="igm__mediaBox">
+                <div class="igm__carousel">
+                  <div class="igm__carousel-slide is-active">
+                    ${e.html}
+                  </div>
+                </div>
+              </div>`;
             ensureEmbedJs();
-          } else {
-            const src = j.thumbnail_url || adminFallback.media_url || "";
-            modalBody.innerHTML = src ? `<img src="${src}" alt="">` : `<div style="padding:40px">Unable to load.</div>`;
+          } else if (e.thumbnail_url) {
+            mediaBoxHTML = `
+              <div class="igm__mediaBox">
+                <img src="${e.thumbnail_url}" alt="">
+              </div>`;
           }
-          return;
         }
       } catch {}
     }
 
-    const fallback = adminFallback.media_url || "";
-    modalBody.innerHTML = fallback
-      ? `<img src="${fallback}" alt="">`
-      : `<div style="padding:40px">No media available.</div>`;
+    // 渲染整体布局
+    modalBody.innerHTML = `
+      <div class="igm__media">
+        ${mediaBoxHTML}
+      </div>
+      <div class="igm__side">
+        ${productsHTMLStr || ""}
+        <div class="igm__caption">
+          ${username ? `<span class="igm__author">@${escapeHtml(username)}</span>` : ""}
+          ${escapeHtml(caption || "No caption.")}
+        </div>
+        <div class="igm__original">
+          ${permalink ? `<a href="${permalink}" target="_blank" rel="noopener">View original post</a>` : ""}
+        </div>
+      </div>
+    `;
+
+    // 绑定交互
+    const car = modalBody.querySelector(".igm__carousel");
+    if (car) bindCarouselEvents(car);
+    const pro = modalBody.querySelector(".igm__products");
+    if (pro) bindProductsStrip(pro);
   }
 
   /* ---------------- Masonry ---------------- */
@@ -259,16 +446,13 @@
       card.dataset.id = item.id;
       card.dataset.type = item.media_type || "IMAGE";
 
-      // ----- 媒体挑选 & 渲染（修正：VIDEO 用 <video>） -----
       const mediaUrl = item.media_url || item.thumbnail_url || "";
-      const isVideo = (item.media_type === "VIDEO");
-      const isMp4   = /\.mp4(\?|$)/i.test(mediaUrl);
+      const isVideo = (item.media_type === "VIDEO") && /\.mp4(\?|$)/i.test(mediaUrl);
 
-      // 有些 VIDEO 只有缩略图（thumbnail_url），也要兜底为 <img>
       let mediaHtml = "";
-      if (isVideo && isMp4) {
+      if (isVideo) {
         mediaHtml = `
-          <video controls class="ugc-media-wrap" autoplay muted playsinline loop preload="metadata">
+          <video class="ugc-media-wrap" controls autoplay muted playsinline loop preload="metadata">
             <source src="${mediaUrl}" type="video/mp4" />
           </video>`;
       } else {
