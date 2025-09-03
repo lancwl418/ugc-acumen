@@ -13,6 +13,9 @@ export const VISIBLE_HASHTAG_PATH = path.join(
   "visible_hashtag.json"
 );
 
+// ✅ 新增（tag / mentions）
+export const VISIBLE_TAG_PATH = path.join(DATA_DIR, "visible_tag_ugc.json");
+
 // 如果你还想要缓存文件，也可以一起放到盘上：
 // export const CACHE_PATH = path.join(DATA_DIR, "cache_ugc.json");
 
@@ -41,5 +44,21 @@ export async function ensureVisibleHashtagFile() {
     } catch {}
     await fs.mkdir(DATA_DIR, { recursive: true });
     await fs.writeFile(VISIBLE_HASHTAG_PATH, raw, "utf-8");
+  }
+}
+
+
+// ✅ 新增：初始化 /data/visible_tag_ugc.json
+export async function ensureVisibleTagFile() {
+  try {
+    await fs.access(VISIBLE_TAG_PATH);
+  } catch {
+    const fallback = path.resolve("public/visible_tag_ugc.json");
+    let raw = "[]";
+    try {
+      raw = await fs.readFile(fallback, "utf-8");
+    } catch {}
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    await fs.writeFile(VISIBLE_TAG_PATH, raw, "utf-8");
   }
 }

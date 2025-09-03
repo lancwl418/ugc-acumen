@@ -179,3 +179,86 @@ export async function fetchHashtagUGC({
     console.error("❌ 抓取 Hashtag UGC 出错:", err);
   }
 }
+
+
+// ==================== 新增：抓取 mentions（/tags） ====================
+
+/**
+ * 抓取被 @ 提及（mentions）的媒体
+ * Graph: GET /{ig-user-id}/tags?fields=...
+ * @param {object} options
+ * @param {number} options.limit  最大条数（翻页合并后截断）
+ * @param {string} options.outfile 输出文件（默认 public/tag_ugc.json）
+ */
+export async function fetchTagUGC({
+  limit = 100,
+  outfile = "public/tag_ugc.json",
+} = {}) {
+  if (!igUserToken || !IG_ID) {
+    console.error("❌ 缺少 igUserToken 或 INSTAGRAM_IG_ID 环境变量");
+    return;
+  }
+
+  // 想拿够用的字段（含 children，便于前端相册播放）
+  const fields = [
+    "id",
+    "caption",
+    "media_type",
+    "media_url",
+    "thumbnail_url",
+    "permalink",
+    "timestamp",
+    "username", // 有些会缺；保留字段位
+    "children{media_type,media_url,thumbnail_url,id}",
+  ].join(",");
+
+  let collected = [];
+  let next = `https://graph.facebook.com/v23.0/${IG_ID}/tags?fields=${encodeURIComponent(
+    fields
+  )}&access_token=${encodeURIComponent(igUserToken)}`;
+
+  try {
+    while (next && collected.length < limit) {
+      const res = await fetch(next);
+      const json = await res.json();
+      if (!json.data) {
+        console.warn("⚠️ /tags 无数据：", json);
+        break;
+      }
+      collected = collected.concat(json.data);
+      next = json.paging?.next || null;
+    }
+
+    // 去重 + 时间降序 + 截断
+    const map = new Map();
+    for (const m of collected) map.set(m.id, m);
+    const merged = Array.from(map.values())
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, limit);
+
+    const normalized = merged.map((m) => ({
+      id: m.id,
+      media_url: m.media_url || m.thumbnail_url || "",
+      thumbnail_url: m.thumbnail_url || null,
+      media_type: m.media_type,
+      caption: m.caption || "",
+      permalink: m.permalink,
+      timestamp: m.timestamp || "",
+      username: m.username || "",    // 可能为空
+      // 额外：把 children 原样落下，前端/弹窗可直接用
+      children: Array.isArray(m.children?.data)
+        ? m.children.data.map((c) => ({
+            id: c.id,
+            media_type: c.media_type,
+            media_url: c.media_url || "",
+            thumbnail_url: c.thumbnail_url || null,
+          }))
+        : [],
+    }));
+
+    await fs.writeFile(outfile, JSON.stringify(normalized, null, 2), "utf-8");
+    console.log(`✅ 已抓取 mentions 共 ${normalized.length} 条，写入 ${outfile}`);
+  } catch (err) {
+    console.error("❌ 抓取 mentions 出错：", err);
+  }
+}
