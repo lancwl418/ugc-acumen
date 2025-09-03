@@ -1,13 +1,13 @@
-// app/lib/ugcResolverTag.server.js
+// app/lib/tagResolver.server.js
 import fs from "fs/promises";
 import { VISIBLE_TAG_PATH, ensureVisibleTagFile } from "./persistPaths.js";
 
-const PAGE_TOKEN   = process.env.PAGE_TOKEN;
+const IG_USER_ID   = process.env.INSTAGRAM_IG_ID;        // 1784...
+const USER_TOKEN   = process.env.INSTAGRAM_ACCESS_TOKEN; // User access token
 const APP_ID       = process.env.META_APP_ID;
 const APP_SECRET   = process.env.META_APP_SECRET;
 const OEMBED_TOKEN = (APP_ID && APP_SECRET) ? `${APP_ID}|${APP_SECRET}` : null;
 
-// ---- helpers ----
 async function safeReadVisible() {
   await ensureVisibleTagFile();
   try {
@@ -30,38 +30,48 @@ function normalize(o = {}) {
     username: o.username || "",
     category: o.category ?? null,
     products: Array.isArray(o.products) ? o.products : [],
-    // ✅ 保持 children 继续透传（如果 admin 也写了）
-    children: Array.isArray(o.children) ? o.children : [],
   };
 }
 
-// ---- Graph by media_id ----
-export async function fetchGraphById(id) {
-  if (!PAGE_TOKEN) throw Object.assign(new Error("No PAGE_TOKEN"), { code: "NO_PAGE_TOKEN" });
+/**
+ * ✅ Graph for TAG — 用 mentioned_media.media_id() 精确拉取单条
+ */
+export async function fetchMentionedByMediaId(mediaId) {
+  if (!IG_USER_ID || !USER_TOKEN) {
+    throw Object.assign(new Error("Missing IG_USER_ID/USER_TOKEN"), { code: "NO_USER_TOKEN" });
+  }
+  // 组 fields
+  const fields = [
+    "id","caption","media_type","media_url","thumbnail_url",
+    "permalink","timestamp","username",
+    "children{media_type,media_url,thumbnail_url,id}"
+  ].join(",");
 
-  // ✅ 多加 children，便于相册还原
-  const fields = "id,media_url,thumbnail_url,media_type,caption,permalink,timestamp,username,children{media_type,media_url,thumbnail_url,id}";
-  const r = await fetch(`https://graph.facebook.com/v23.0/${id}?fields=${fields}&access_token=${PAGE_TOKEN}`);
+  const url = new URL(`https://graph.facebook.com/v23.0/${IG_USER_ID}`);
+  url.searchParams.set(
+    "fields",
+    `mentioned_media.media_id(${encodeURIComponent(mediaId)}){${fields}}`
+  );
+  url.searchParams.set("access_token", USER_TOKEN);
+
+  const r = await fetch(url.toString());
   const j = await r.json();
-  if (!r.ok || j?.error) throw Object.assign(new Error(j?.error?.message || "Graph error"), { code: j?.error?.code || "GRAPH_ERROR" });
-  return normalize({
-    ...j,
-    children: Array.isArray(j.children?.data)
-      ? j.children.data.map(c => ({
-          id: c.id,
-          media_type: c.media_type,
-          media_url: c.media_url || "",
-          thumbnail_url: c.thumbnail_url || null,
-        }))
-      : [],
-  });
+  if (!r.ok || j?.error) {
+    throw Object.assign(
+      new Error(j?.error?.message || "Graph error"),
+      { code: j?.error?.code || "GRAPH_ERROR" }
+    );
+  }
+
+  // 返回结构：{ mentioned_media: { data: [ {...} ] } }
+  const node = j?.mentioned_media?.data?.[0] || null;
+  if (!node) throw Object.assign(new Error("Empty mentioned_media"), { code: "EMPTY" });
+  return normalize(node);
 }
 
-// ---- oEmbed ----
+/** oEmbed 兜底（可选） */
 export async function fetchOEmbed(permalink) {
-  if (!permalink) throw Object.assign(new Error("Missing permalink"), { code: "NO_PERMALINK" });
-  if (!OEMBED_TOKEN) throw Object.assign(new Error("No APP token for oEmbed"), { code: "NO_OEMBED_TOKEN" });
-
+  if (!permalink || !OEMBED_TOKEN) throw Object.assign(new Error("NO_OEMBED"), { code: "NO_OEMBED" });
   const u = new URL("https://graph.facebook.com/v23.0/instagram_oembed");
   u.searchParams.set("url", permalink);
   u.searchParams.set("access_token", OEMBED_TOKEN);
@@ -75,23 +85,19 @@ export async function fetchOEmbed(permalink) {
 
   const media_type = j.html && /<video/i.test(j.html) ? "VIDEO" : "IMAGE";
   return normalize({
-    id: "",
-    media_url: j.thumbnail_url || "",
-    thumbnail_url: j.thumbnail_url || "",
-    media_type,
-    caption: j.title || "",
-    permalink,
-    username: j.author_name || "",
+    id: "", media_url: j.thumbnail_url || "", thumbnail_url: j.thumbnail_url || "",
+    media_type, caption: j.title || "", permalink, username: j.author_name || "",
   });
 }
 
-// ---- Admin fallback ----
-export function buildFromAdmin(entry) {
-  return normalize(entry);
-}
+/** Admin 兜底 */
+export function buildFromAdmin(entry) { return normalize(entry); }
 
-// ---- 单条兜底：Graph -> oEmbed -> Admin ----
-export async function resolveOne(entryOrId, visibleList) {
+/**
+ * ✅ 单条兜底：Graph(mentioned_media.media_id) → oEmbed → Admin
+ * entryOrId: 可传 {id, permalink, ...} 或纯 media_id
+ */
+export async function resolveOneTag(entryOrId, visibleList) {
   let base = {};
   if (typeof entryOrId === "string") {
     const list = visibleList || await safeReadVisible();
@@ -100,36 +106,36 @@ export async function resolveOne(entryOrId, visibleList) {
     base = entryOrId || {};
   }
 
+  // 1) Graph
   try {
-    const g = await fetchGraphById(base.id);
+    const g = await fetchMentionedByMediaId(base.id);
     if (g.media_url || g.thumbnail_url) {
       return normalize({ ...g, category: base.category, products: base.products });
     }
-  } catch (_) {}
+  } catch {}
 
+  // 2) oEmbed
   try {
     if (base.permalink) {
       const e = await fetchOEmbed(base.permalink);
-      if (e.media_url) {
-        return normalize({ ...e, id: base.id, category: base.category, products: base.products });
-      }
+      if (e.media_url) return normalize({ ...e, id: base.id, category: base.category, products: base.products });
     }
-  } catch (_) {}
+  } catch {}
 
+  // 3) Admin
   const admin = buildFromAdmin(base);
   if (admin.media_url) return admin;
 
   return null;
 }
 
-// ---- 批量并发 ----
-export async function resolveMany(entries, concurrency = 5) {
+export async function resolveManyTag(entries, concurrency = 5) {
   const res = new Array(entries.length);
   let i = 0;
   async function worker() {
     while (i < entries.length) {
       const idx = i++;
-      res[idx] = await resolveOne(entries[idx]).catch(() => null);
+      res[idx] = await resolveOneTag(entries[idx]).catch(() => null);
     }
   }
   await Promise.all(new Array(Math.min(entries.length, concurrency)).fill(0).map(worker));

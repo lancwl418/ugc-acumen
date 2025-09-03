@@ -8,7 +8,7 @@
 
   // 后端接口
   const API_HASHTAG = `${API_BASE}/api-hashtag-ugc`;      // Hashtag 可见清单
-  const API_TAG     = `${API_BASE}/api-tag-ugc`;          // ✅ 新增：Tag/Mentions 可见清单
+  const API_TAG     = `${API_BASE}/api-tag-ugc`;          // Tag/Mentions 可见清单
   const API_OEMBED  = `${API_BASE}/api-ig-oembed`;        // oEmbed 代理
   const API_DETAIL  = `${API_BASE}/api-ugc-media-detail`; // 弹窗详细三层兜底
 
@@ -100,7 +100,7 @@
     document.body.appendChild(s);
   }
 
-  // 弹窗三层兜底：优先 /api-ugc-media-detail → 失败用 /api-ig-oembed → 最后用 admin 缓存
+  // 弹窗三层兜底
   async function openLightboxById(mediaId) {
     const adminFallback = ITEM_CACHE.get(mediaId) || {};
     const permalink = adminFallback.permalink || "";
@@ -108,7 +108,6 @@
     modalBody.innerHTML = '<div style="padding:40px;color:#999">Loading…</div>';
     openModal();
 
-    // A) 详细接口（Graph 优先，服务端已做三层兜底）
     try {
       const r = await fetch(`${API_DETAIL}?media_id=${encodeURIComponent(mediaId)}`, { mode: "cors" });
       if (r.ok) {
@@ -116,39 +115,32 @@
         if (j.media_type === "VIDEO" && j.media_url) {
           modalBody.innerHTML = `<video controls playsinline preload="metadata"><source src="${j.media_url}" type="video/mp4"></video>`;
         } else {
-          const img = j.media_url || j.thumbnail_url || adminFallback.media_url || adminFallback.thumbnail_url || "";
+          const img = j.media_url || j.thumbnail_url || adminFallback.media_url || "";
           modalBody.innerHTML = img ? `<img src="${img}" alt="">` : `<div style="padding:40px">No media.</div>`;
         }
         if (j.permalink || permalink) modalOpen.href = j.permalink || permalink;
-        return; // ✅
+        return;
       }
-    } catch (e) {
-      console.info("detail api failed, fallback to oEmbed/admin:", e);
-    }
+    } catch {}
 
-    // B) oEmbed（需要 permalink）
     if (permalink) {
       try {
         const r = await fetch(`${API_OEMBED}?url=${encodeURIComponent(permalink)}`, { mode: "cors" });
         if (r.ok) {
           const j = await r.json();
           if (j.html && /<video/i.test(j.html)) {
-            modalBody.innerHTML = `<div class="igm__wrap">${j.html}<div class="igm__shield" title="Open in Instagram via the button below"></div></div>`;
+            modalBody.innerHTML = `<div class="igm__wrap">${j.html}<div class="igm__shield"></div></div>`;
             ensureEmbedJs();
           } else {
-            const src = j.thumbnail_url || adminFallback.media_url || adminFallback.thumbnail_url || "";
+            const src = j.thumbnail_url || adminFallback.media_url || "";
             modalBody.innerHTML = src ? `<img src="${src}" alt="">` : `<div style="padding:40px">Unable to load.</div>`;
           }
           return;
         }
-      } catch (e) {
-        console.info("oEmbed failed, fallback to admin:", e);
-      }
+      } catch {}
     }
 
-    // C) Admin 最后一层
-    const fallback =
-      adminFallback.media_url || adminFallback.thumbnail_url || "";
+    const fallback = adminFallback.media_url || "";
     modalBody.innerHTML = fallback
       ? `<img src="${fallback}" alt="">`
       : `<div style="padding:40px">No media available.</div>`;
@@ -160,8 +152,11 @@
       this.container = container;
       this.category = category;
       this.pageSize = pageSize;
-      this.offset = 0;        // 同步用于 hashtag & tag 两个接口
-      this.total = 0;
+
+      this.offsetHashtag = 0;
+      this.offsetTag = 0;
+      this.totalHashtag = 0;
+      this.totalTag = 0;
 
       if (!this.container) {
         console.warn(`[UGC] container for "${category}" not found, skip.`);
@@ -181,7 +176,6 @@
       this.container.appendChild(this.wrap);
       this.container.appendChild(this.loadMoreBtn);
 
-      // 事件代理：点击卡片 => 按 media_id 打开弹窗（走三层兜底）
       this.wrap.addEventListener("click", (e) => {
         const btn = e.target.closest(".ugc-open");
         if (!btn) return;
@@ -194,49 +188,49 @@
 
     async loadMore() {
       if (this.disabled) return;
-
       try {
-        const data = await this.fetchPage(this.offset);
+        const data = await this.fetchPage(this.offsetHashtag, this.offsetTag);
         const list = data.media || [];
-        const failed = data.failed || [];
-        // total 用两边 total 之和，尽量把两类都吃完
-        this.total = data.total || this.total;
 
-        if (failed.length) {
-          console.info(`[UGC] ${this.category} partial failed:`, failed);
-        }
-
-        if (!list.length) {
-          if (this.offset === 0) {
-            const empty = document.createElement("div");
-            empty.className = "ugc-empty";
-            empty.textContent = "No posts yet.";
-            this.wrap.appendChild(empty);
-          }
+        if (!list.length && this.offsetHashtag === 0 && this.offsetTag === 0) {
+          const empty = document.createElement("div");
+          empty.className = "ugc-empty";
+          empty.textContent = "No posts yet.";
+          this.wrap.appendChild(empty);
           this.loadMoreBtn.style.display = "none";
           return;
         }
 
         for (const item of list) this.appendItem(item);
 
-        this.offset += list.length;
-        this.loadMoreBtn.style.display =
-          this.offset >= this.total ? "none" : "inline-block";
+        this.offsetHashtag += data.gotHashtag || 0;
+        this.offsetTag += data.gotTag || 0;
+        this.totalHashtag = data.totalHashtag || this.totalHashtag;
+        this.totalTag = data.totalTag || this.totalTag;
+
+        const allDone =
+          this.offsetHashtag >= (this.totalHashtag || 0) &&
+          this.offsetTag >= (this.totalTag || 0);
+        this.loadMoreBtn.style.display = allDone ? "none" : "inline-block";
       } catch (err) {
         console.error(`[UGC] fetch error (${this.category}):`, err);
       }
     }
 
-    async fetchPage(offset) {
-      // 读取 hashtag & tag 两类可见清单，服务端已按 category 过滤
-      const qs = `category=${encodeURIComponent(this.category)}&limit=${this.pageSize}&offset=${offset}&noRefetch=1`;
+    async fetchPage(offsetHashtag, offsetTag) {
+      const sizeH = Math.ceil(this.pageSize / 2);
+      const sizeT = this.pageSize - sizeH;
+
+      const qsH = `category=${encodeURIComponent(this.category)}&limit=${sizeH}&offset=${offsetHashtag}&noRefetch=1`;
+      const qsT = `category=${encodeURIComponent(this.category)}&limit=${sizeT}&offset=${offsetTag}&noRefetch=1`;
+
       const [rHashtag, rTag] = await Promise.allSettled([
-        fetch(`${API_HASHTAG}?${qs}`, { mode: "cors" }),
-        fetch(`${API_TAG}?${qs}`,     { mode: "cors" }),
+        fetch(`${API_HASHTAG}?${qsH}`, { mode: "cors" }),
+        fetch(`${API_TAG}?${qsT}`, { mode: "cors" }),
       ]);
 
-      let hashtag = { media: [], total: 0, failed: [] };
-      let tag     = { media: [], total: 0, failed: [] };
+      let hashtag = { media: [], total: 0 };
+      let tag = { media: [], total: 0 };
 
       if (rHashtag.status === "fulfilled" && rHashtag.value.ok) {
         hashtag = await rHashtag.value.json();
@@ -245,21 +239,19 @@
         tag = await rTag.value.json();
       }
 
-      // 合并 + 时间降序
       const merged = [...(hashtag.media || []), ...(tag.media || [])]
         .sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
 
       return {
         media: merged,
-        total: (hashtag.total || 0) + (tag.total || 0),
-        failed: [...(hashtag.failed || []), ...(tag.failed || [])],
+        totalHashtag: hashtag.total || 0,
+        totalTag: tag.total || 0,
+        gotHashtag: (hashtag.media || []).length,
+        gotTag: (tag.media || []).length,
       };
     }
 
     appendItem(item) {
-      if (!this.wrap) return;
-
-      // 写入本地缓存（弹窗兜底用）
       ITEM_CACHE.set(item.id, item);
 
       const card = document.createElement("div");
@@ -270,15 +262,11 @@
       const mediaUrl = item.media_url || item.thumbnail_url || "";
       if (!mediaUrl) return;
 
-      const mediaHtml =
-        item.media_type === "VIDEO"
-          ? `<img class="ugc-media-wrap" src="${mediaUrl}" alt="">`
-          : `<img class="ugc-media-wrap" src="${mediaUrl}" alt="">`;
-
+      const mediaHtml = `<img class="ugc-media-wrap" src="${mediaUrl}" alt="">`;
       const author =
-        item.username || item.author
+        item.username
           ? `<div class="ugc-caption" style="color:#666;font-size:12px;margin-top:-6px;">
-               @${escapeHtml(item.username || item.author)}
+               @${escapeHtml(item.username)}
              </div>`
           : "";
 
@@ -288,9 +276,7 @@
         </button>
         ${
           item.caption
-            ? `<div class="ugc-caption">${escapeHtml(
-                (item.caption || "").slice(0, 200)
-              )}</div>`
+            ? `<div class="ugc-caption">${escapeHtml((item.caption || "").slice(0, 200))}</div>`
             : ""
         }
         ${author}
