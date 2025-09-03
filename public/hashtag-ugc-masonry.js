@@ -132,7 +132,7 @@
   .acumen-products h4{margin:0 0 8px}
   .acumen-pstrip{display:flex;gap:12px;overflow:auto;scrollbar-width:none;padding-bottom:6px}
   .acumen-pstrip::-webkit-scrollbar{display:none}
-  .acumen-ps-btn{position:absolute;top:16px;transform:translateY(-50%);width:30px;height:30px;border-radius:50%;border:0;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.1);cursor:pointer}
+  .acumen-ps-btn{position:absolute;top:92px;transform:translateY(-50%);width:30px;height:30px;border-radius:50%;border:0;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.1);cursor:pointer}
   .acumen-ps-btn.prev{left:-8px}
   .acumen-ps-btn.next{right:-8px}
 
@@ -140,7 +140,7 @@
   .ugc-product-card {
     display: flex; align-items: center; gap: 8px;
     padding: 8px; border: 1px solid #eee; border-radius: 6px;
-    min-width: 260px; max-width: 260px; background:#fff;
+    min-width: 260px; background:#fff;
   }
   .ugc-product-card img {
     width: 60px; height: 60px; object-fit: cover; border-radius: 4px;
@@ -360,8 +360,8 @@
       <div class="acumen-modal-right">
         ${productsHTMLStr || ""}
         <div class="acumen-caption">
-          ${username ? `<span class="acumen-author">@${escapeHtml(username)}</span>` : ""}
-          ${escapeHtml(caption || "No caption.")}
+          ${username ? `<p class="acumen-author">@${escapeHtml(username)}</p>` : ""}
+          <p>${escapeHtml(caption || "No caption.")}</p>
         </div>
         <div class="acumen-original">
           ${permalink ? `<a href="${permalink}" target="_blank" rel="noopener">View original post</a>` : ""}
