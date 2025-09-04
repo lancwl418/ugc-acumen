@@ -55,18 +55,12 @@ async function readJsonSafe(file, fallback = "[]") {
   }
 }
 
-/* ----------------- Loader：进入页面/分页 → 直接抓分页数据 ----------------- */
+/* ----------------- Loader：进入页面就拉第一页（游标分页） ----------------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
 
-  // 识别预取；(已由 fetch* 函数内置缓存 coalescing 保护)
-  const purpose = request.headers.get("Purpose") || "";
-  const secPurpose = request.headers.get("Sec-Purpose") || "";
-  const isPrefetch = purpose.includes("prefetch") || secPurpose.includes("prefetch");
-  void isPrefetch; // 目前仅信息性
-
   // Hashtag：页大小 & 多标签游标（Base64 JSON：{ "<tag>": {topAfter, recentAfter} }）
-  const hSize = Math.min(60, Math.max(6, Number(url.searchParams.get("hSize") || 12)));
+  const hSize = Math.min(40, Math.max(6, Number(url.searchParams.get("hSize") || 10)));
   const hCursorB64 = url.searchParams.get("hCursor") || "";
   let hCursors = {};
   try { if (hCursorB64) hCursors = JSON.parse(Buffer.from(hCursorB64, "base64").toString("utf-8")); } catch {}
@@ -74,7 +68,7 @@ export async function loader({ request }) {
   const tagsCsv = url.searchParams.get("hTags") || "";            // 为空则 fallback 到 env
 
   // Mentions：页大小 & 游标
-  const tSize = Math.min(60, Math.max(6, Number(url.searchParams.get("tSize") || 12)));
+  const tSize = Math.min(40, Math.max(6, Number(url.searchParams.get("tSize") || 10)));
   const tAfter = url.searchParams.get("tAfter") || "";
 
   await Promise.all([ensureVisibleHashtagFile(), ensureVisibleTagFile()]);
@@ -128,11 +122,10 @@ export async function action({ request }) {
   const op = fd.get("op");
 
   if (op === "refresh") {
-    // 轻量预热：抓 hashtag & mentions 首页（失败不抛）
     try {
       await Promise.all([
-        fetchHashtagUGCPage({ limit: 12, strategy: "top" }),
-        fetchTagUGCPage({ limit: 12 }),
+        fetchHashtagUGCPage({ limit: 10, strategy: "top" }),
+        fetchTagUGCPage({ limit: 10 }),
       ]);
     } catch {}
     return json({ ok: true });
@@ -225,7 +218,7 @@ export default function AdminHashtagUGC() {
           onNext={() => {
             const usp = new URLSearchParams(window.location.search);
             usp.set("hCursor", hashtag.nextCursorB64 || "");
-            usp.set("hSize", String(hashtag.pageSize || 12));
+            usp.set("hSize", String(hashtag.pageSize || 10));
             if (hashtag.strategy) usp.set("hStrategy", hashtag.strategy);
             if (hashtag.tagsCsv) usp.set("hTags", hashtag.tagsCsv);
             navigate(`?${usp.toString()}#hashtag`, { preventScrollReset: true, replace: true });
@@ -246,7 +239,7 @@ export default function AdminHashtagUGC() {
           onNext={() => {
             const usp = new URLSearchParams(window.location.search);
             if (mentions.nextAfter) usp.set("tAfter", mentions.nextAfter);
-            usp.set("tSize", String(mentions.pageSize || 12));
+            usp.set("tSize", String(mentions.pageSize || 10));
             navigate(`?${usp.toString()}#mentions`, { preventScrollReset: true, replace: true });
             reloadCurrent();
           }}
@@ -338,10 +331,9 @@ function SectionMentions({ title, source, data, products, saver, onNext }) {
   );
 }
 
-/* ----------------- 共享网格（修复 media 与 fallback） ----------------- */
+/* ----------------- 共用网格（⚠️ hashtag 不走媒体代理） ----------------- */
 function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory, onChangeProducts }) {
-  const FALLBACK_DATA_URI =
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
+  const FALLBACK = "/ugc-fallback.png"; // 放到 public/ 目录
 
   return (
     <div
@@ -359,15 +351,15 @@ function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory,
         const category = picked?.category || "camping";
         const chosenProducts = picked?.products || [];
 
-        // ✅ hashtag 不用 /api/ig/media；mentions 才用代理以应对过期
+        // ✅ hashtag 直接用直链；mentions 才用 /api/ig/media（你现有代理）
         const hashtagThumb = item.thumbnail_url || item.media_url || "";
         const hashtagRaw   = item.media_url || "";
 
         const tagThumbProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=thumb&source=tag&permalink=${encodeURIComponent(item.permalink || "")}`;
         const tagRawProxy   = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=raw&source=tag&permalink=${encodeURIComponent(item.permalink || "")}`;
 
-        const imgSrc   = source === "hashtag" ? (hashtagThumb || FALLBACK_DATA_URI) : tagThumbProxy;
-        const videoSrc = source === "hashtag" ? (hashtagRaw || "") : tagRawProxy;
+        const imgSrc   = source === "hashtag" ? (hashtagThumb || FALLBACK) : tagThumbProxy;
+        const videoSrc = source === "hashtag" ? (hashtagRaw || "")        : tagRawProxy;
 
         return (
           <Card key={`${source}-${item.id}`} padding="400">
@@ -390,7 +382,7 @@ function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory,
                     preload="metadata"
                     playsInline
                     style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
-                    onError={(e) => { e.currentTarget.poster = FALLBACK_DATA_URI; }}
+                    onError={(e) => { e.currentTarget.poster = FALLBACK; }}
                   >
                     <source src={videoSrc} type="video/mp4" />
                   </video>
@@ -402,7 +394,7 @@ function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory,
                     decoding="async"
                     referrerPolicy="no-referrer"
                     style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
-                    onError={(e) => { e.currentTarget.src = FALLBACK_DATA_URI; }}
+                    onError={(e) => { e.currentTarget.src = FALLBACK; }}
                   />
                 )}
               </a>

@@ -14,18 +14,30 @@ const IG_ID = process.env.INSTAGRAM_IG_ID;
 const USER_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN;
 const DEFAULT_TAGS = (process.env.HASHTAGS || process.env.HASHTAG || "acumencamera");
 
-/* ==================== 进程内 30s 缓存 + 并发合并 ==================== */
+/* ============ 进程内缓存 + 并发上限（防止重复抓和 OOM） ============ */
 const _mem = new Map(); // key -> { expiry, promise }
 function withCache(key, ttlMs, factory) {
   const now = Date.now();
   const hit = _mem.get(key);
-  if (hit && hit.expiry > now) return hit.promise; // 命中缓存（并发合并）
+  if (hit && hit.expiry > now) return hit.promise; // 命中（也自动合并并发）
   const p = (async () => {
-    try { return await factory(); }
-    finally { /* 失败不保留坏 Promise */ }
+    try { return await factory(); } finally {}
   })();
   _mem.set(key, { expiry: now + ttlMs, promise: p });
   return p;
+}
+
+const MAX_OUTBOUND = 6; // 所有外网 fetch 的并发上限
+let _inFlight = 0;
+const _q = [];
+async function withLimit(fn) {
+  if (_inFlight >= MAX_OUTBOUND) await new Promise(r => _q.push(r));
+  _inFlight++;
+  try { return await fn(); }
+  finally {
+    _inFlight--;
+    const next = _q.shift(); next && next();
+  }
 }
 
 /* ==================== 你现有的用户媒体抓取（保留） ==================== */
@@ -58,7 +70,6 @@ export async function fetchInstagramUGC() {
 }
 
 /* ==================== 工具函数 ==================== */
-
 function parseTags(tagOrCsv) {
   return String(tagOrCsv || "")
     .split(",").map(s => s.trim()).filter(Boolean)
@@ -72,7 +83,7 @@ async function getHashtagId(tag, igId, pageToken) {
   url.searchParams.set("user_id", igId);
   url.searchParams.set("q", tag);
   url.searchParams.set("access_token", pageToken);
-  const res = await fetch(url);
+  const res = await withLimit(() => fetch(url));
   const json = await res.json();
   const id = json?.data?.[0]?.id || null;
   if (id) hashtagIdCache.set(tag, id);
@@ -80,7 +91,6 @@ async function getHashtagId(tag, igId, pageToken) {
 }
 
 /* ==================== Hashtag：分页（按标签游标） ==================== */
-
 async function fetchHashtagEdgePage({ hashtagId, igId, pageToken, edge = "top_media", limit = 20, after = "" }) {
   const base = `https://graph.facebook.com/v23.0/${hashtagId}/${edge}`;
   const fields = "id,caption,media_type,media_url,permalink,timestamp";
@@ -91,7 +101,7 @@ async function fetchHashtagEdgePage({ hashtagId, igId, pageToken, edge = "top_me
   if (after) u.searchParams.set("after", after);
   u.searchParams.set("access_token", pageToken);
 
-  const res = await fetch(u.toString());
+  const res = await withLimit(() => fetch(u.toString()));
   const json = await res.json();
 
   if (!res.ok || json?.error) {
@@ -106,17 +116,11 @@ async function fetchHashtagEdgePage({ hashtagId, igId, pageToken, edge = "top_me
 
 /**
  * ✅ Hashtag 游标分页（多标签、可选 top/recent/both），做时间归并
- * @param {object} options
- * @param {string[]|string} options.tags   标签数组/逗号分隔字符串（缺省走 env）
- * @param {'top'|'recent'|'both'} options.strategy
- * @param {number} options.limit           单页条数（建议 12~60）
- * @param {object} options.cursors         { "<tag>": { topAfter?: string, recentAfter?: string } }
- * @returns {Promise<{items: Array, nextCursors: object}>}
  */
 export async function fetchHashtagUGCPage({
   tags = DEFAULT_TAGS,
   strategy = "top",
-  limit = 24,
+  limit = 10,
   cursors = {},
 } = {}) {
   const cacheKey = `h:${JSON.stringify({tags, strategy, limit, cursors})}`;
@@ -128,7 +132,6 @@ export async function fetchHashtagUGCPage({
 
     const edges = strategy === "both" ? ["top_media", "recent_media"]
                  : strategy === "recent" ? ["recent_media"] : ["top_media"];
-
     const perBucket = Math.max(3, Math.ceil(limit / (tagArr.length * edges.length)));
 
     const ids = await Promise.all(tagArr.map(t => getHashtagId(t, IG_ID, PAGE_TOKEN)));
@@ -190,7 +193,7 @@ export async function fetchHashtagUGC({
       const page = await fetchHashtagUGCPage({
         tags: tag,
         strategy,
-        limit: Math.min(60, limit - collected.length),
+        limit: Math.min(40, limit - collected.length),
         cursors,
       });
       collected.push(...page.items);
@@ -213,7 +216,6 @@ export async function fetchHashtagUGC({
 }
 
 /* ==================== Mentions（/tags）：分页 ==================== */
-
 function buildTagsFields(includeChildren = false) {
   if (includeChildren) {
     return [
@@ -223,7 +225,6 @@ function buildTagsFields(includeChildren = false) {
   }
   return ["id","caption","media_type","media_url","thumbnail_url","permalink","timestamp","username"].join(",");
 }
-
 function normalizeTagItem(m) {
   return {
     id: m.id,
@@ -245,10 +246,8 @@ function normalizeTagItem(m) {
   };
 }
 
-/**
- * ✅ Mentions (/tags) 游标分页（单页）
- */
-export async function fetchTagUGCPage({ limit = 24, after = "", includeChildren = false } = {}) {
+/** ✅ Mentions (/tags) 游标分页（单页） */
+export async function fetchTagUGCPage({ limit = 10, after = "", includeChildren = false } = {}) {
   const cacheKey = `t:${JSON.stringify({limit, after, includeChildren})}`;
   return withCache(cacheKey, 30_000, async () => {
     if (!USER_TOKEN || !IG_ID) throw new Error("缺少 INSTAGRAM_ACCESS_TOKEN 或 INSTAGRAM_IG_ID");
@@ -259,7 +258,7 @@ export async function fetchTagUGCPage({ limit = 24, after = "", includeChildren 
     if (after) u.searchParams.set("after", after);
     u.searchParams.set("access_token", USER_TOKEN);
 
-    const res = await fetch(u.toString());
+    const res = await withLimit(() => fetch(u.toString()));
     const json = await res.json();
 
     if (!res.ok || json?.error) {
@@ -276,9 +275,7 @@ export async function fetchTagUGCPage({ limit = 24, after = "", includeChildren 
   });
 }
 
-/**
- * 保留：mentions 一次抓够写盘（内部逐页）
- */
+/** 保留：mentions 一次抓够写盘（内部逐页） */
 export async function fetchTagUGC({
   limit = 100,
   outfile = "public/tag_ugc.json",
@@ -294,7 +291,7 @@ export async function fetchTagUGC({
   try {
     while (collected.length < limit) {
       const page = await fetchTagUGCPage({
-        limit: Math.min(50, limit - collected.length),
+        limit: Math.min(40, limit - collected.length),
         after,
         includeChildren,
       });
