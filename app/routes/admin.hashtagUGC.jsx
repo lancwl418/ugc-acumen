@@ -1,42 +1,13 @@
 // app/routes/admin.hashtagugc.jsx
 import { json } from "@remix-run/node";
-import {
-  useLoaderData,
-  useFetcher,
-  useNavigate,
-  useLocation,
-  useRevalidator,
-} from "@remix-run/react";
-import {
-  Page,
-  Card,
-  Text,
-  Checkbox,
-  Button,
-  Select,
-  Tag,
-  InlineStack,
-  BlockStack,
-  Divider,
-  Spinner,
-} from "@shopify/polaris";
-import { useEffect, useMemo, useState } from "react";
+import { useLoaderData, useFetcher, useNavigate, useLocation } from "@remix-run/react";
+import { Page, Card, Text, Checkbox, Button, Select, Tag, InlineStack, BlockStack, Divider } from "@shopify/polaris";
+import { useMemo, useState, useEffect } from "react";
 import fs from "fs/promises";
 import path from "path";
+import { VISIBLE_HASHTAG_PATH, VISIBLE_TAG_PATH, ensureVisibleHashtagFile, ensureVisibleTagFile } from "../lib/persistPaths.js";
+import { fetchHashtagUGCPage, fetchTagUGCPage } from "../lib/fetchHashtagUGC.js";
 
-import {
-  VISIBLE_HASHTAG_PATH,
-  VISIBLE_TAG_PATH,
-  ensureVisibleHashtagFile,
-  ensureVisibleTagFile,
-} from "../lib/persistPaths.js";
-
-import {
-  fetchHashtagUGCPage,
-  fetchTagUGCPage,
-} from "../lib/fetchHashtagUGC.js";
-
-/* ----------------- 分类选项 ----------------- */
 const CATEGORY_OPTIONS = [
   { label: "Camping Life", value: "camping" },
   { label: "Off-Road", value: "off-road" },
@@ -47,28 +18,18 @@ const CATEGORY_OPTIONS = [
 ];
 
 async function readJsonSafe(file, fallback = "[]") {
-  try {
-    const raw = await fs.readFile(file, "utf-8");
-    return JSON.parse(raw || fallback);
-  } catch {
-    return JSON.parse(fallback);
-  }
+  try { return JSON.parse(await fs.readFile(file, "utf-8") || fallback); } catch { return JSON.parse(fallback); }
 }
 
-/* ----------------- Loader：进入页面就拉第一页（游标分页） ----------------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
 
-  // Hashtag：页大小 & 多标签游标（Base64 JSON：{ "<tag>": {topAfter, recentAfter} }）
   const hSize = Math.min(40, Math.max(6, Number(url.searchParams.get("hSize") || 10)));
   const hCursorB64 = url.searchParams.get("hCursor") || "";
   let hCursors = {};
   try { if (hCursorB64) hCursors = JSON.parse(Buffer.from(hCursorB64, "base64").toString("utf-8")); } catch {}
-  const strategy = (url.searchParams.get("hStrategy") || "top"); // top|recent|both
-  const tagsCsv = url.searchParams.get("hTags") || "";            // 为空则 fallback 到 env
 
-  // Mentions：页大小 & 游标
-  const tSize = Math.min(40, Math.max(6, Number(url.searchParams.get("tSize") || 10)));
+  const tSize  = Math.min(40, Math.max(6, Number(url.searchParams.get("tSize") || 10)));
   const tAfter = url.searchParams.get("tAfter") || "";
 
   await Promise.all([ensureVisibleHashtagFile(), ensureVisibleTagFile()]);
@@ -78,59 +39,30 @@ export async function loader({ request }) {
     readJsonSafe(path.resolve("public/products.json"), "[]"),
   ]);
 
-  // 1) Hashtag：按游标抓一页（多标签合并 + 时间归并）
-  const hPage = await fetchHashtagUGCPage({
-    tags: tagsCsv || undefined,
-    strategy,
-    limit: hSize,
-    cursors: hCursors,
-  }).catch(() => ({ items: [], nextCursors: {} }));
+  const [hPage, tPage] = await Promise.all([
+    fetchHashtagUGCPage({ limit: hSize, cursors: hCursors }).catch(() => ({ items: [], nextCursors: {} })),
+    fetchTagUGCPage({ limit: tSize, after: tAfter }).catch(() => ({ items: [], nextAfter: "" })),
+  ]);
 
-  // 2) Mentions：按游标抓一页
-  const tPage = await fetchTagUGCPage({ limit: tSize, after: tAfter }).catch(() => ({
-    items: [],
-    nextAfter: "",
-  }));
-
-  return json(
-    {
-      hashtag: {
-        items: hPage.items,
-        visible: hashtagVisible,
-        nextCursorB64:
-          Buffer.from(JSON.stringify(hPage.nextCursors || {}), "utf-8").toString("base64"),
-        strategy,
-        tagsCsv,
-        pageSize: hSize,
-      },
-      mentions: {
-        items: tPage.items,
-        visible: tagVisible,
-        nextAfter: tPage.nextAfter || "",
-        pageSize: tSize,
-        currentAfter: tAfter,
-      },
-      products,
+  return json({
+    hashtag: {
+      items: hPage.items,
+      visible: hashtagVisible,
+      nextCursorB64: Buffer.from(JSON.stringify(hPage.nextCursors || {}), "utf-8").toString("base64"),
+      pageSize: hSize,
     },
-    { headers: { "Cache-Control": "private, max-age=30" } }
-  );
+    mentions: {
+      items: tPage.items,
+      visible: tagVisible,
+      nextAfter: tPage.nextAfter || "",
+      pageSize: tSize,
+    },
+    products,
+  });
 }
 
-/* ----------------- Action：保存 & 手动刷新（就地重载，不跳页） ----------------- */
 export async function action({ request }) {
   const fd = await request.formData();
-  const op = fd.get("op");
-
-  if (op === "refresh") {
-    try {
-      await Promise.all([
-        fetchHashtagUGCPage({ limit: 10, strategy: "top" }),
-        fetchTagUGCPage({ limit: 10 }),
-      ]);
-    } catch {}
-    return json({ ok: true });
-  }
-
   const source = fd.get("source");
   const entries = fd.getAll("ugc_entry").map((s) => JSON.parse(s));
 
@@ -162,291 +94,145 @@ export async function action({ request }) {
   return json({ ok: true });
 }
 
-/* ----------------- 页面组件 ----------------- */
 export default function AdminHashtagUGC() {
-  const serverData = useLoaderData();
-  const [data, setData] = useState(serverData);
-
-  const pager = useFetcher();
-  const refresher = useFetcher();
+  const data = useLoaderData();
   const saver = useFetcher();
   const navigate = useNavigate();
   const location = useLocation();
-  const { revalidate } = useRevalidator();
-
-  useEffect(() => { if (pager.data) setData(pager.data); }, [pager.data]);
-
-  useEffect(() => {
-    if (refresher.state === "idle" && refresher.data?.ok) {
-      pager.load(`${location.pathname}${location.search}`);
-      revalidate();
-    }
-  }, [refresher.state, refresher.data, pager, location, revalidate]);
-
-  const { hashtag, mentions, products } = data;
-
-  const reloadCurrent = () => pager.load(`${location.pathname}${location.search}`);
 
   return (
-    <Page title="UGC 管理（# Hashtag & @ Mentions 游标分页）">
-      <InlineStack align="space-between" blockAlign="center">
-        <Text as="h1" variant="headingLg">UGC 管理（# 与 @ 分开分页）</Text>
-        <refresher.Form method="post">
-          <input type="hidden" name="op" value="refresh" />
-          <Button submit loading={refresher.state !== "idle"}>手动刷新池子</Button>
-        </refresher.Form>
-      </InlineStack>
-
-      {(pager.state !== "idle") && (
-        <InlineStack align="center" blockAlign="center" style={{ margin: "12px 0" }}>
-          <Spinner accessibilityLabel="加载中" size="small" />
-          <Text variant="bodySm" tone="subdued" as="span" style={{ marginLeft: 8 }}>
-            加载数据…
-          </Text>
-        </InlineStack>
-      )}
-
+    <Page title="UGC 管理（# 与 @ 分开分页）">
       <BlockStack gap="600">
-        {/* Hashtag —— 游标分页（多标签合并） */}
         <div id="hashtag" />
-        <SectionHashtag
+        <Section
           title="🏷️ Hashtag（#）"
           source="hashtag"
-          data={hashtag}
-          products={products}
+          pool={data.hashtag.items}
+          visible={data.hashtag.visible}
+          products={data.products}
           saver={saver}
-          onNext={() => {
-            const usp = new URLSearchParams(window.location.search);
-            usp.set("hCursor", hashtag.nextCursorB64 || "");
-            usp.set("hSize", String(hashtag.pageSize || 10));
-            if (hashtag.strategy) usp.set("hStrategy", hashtag.strategy);
-            if (hashtag.tagsCsv) usp.set("hTags", hashtag.tagsCsv);
-            navigate(`?${usp.toString()}#hashtag`, { preventScrollReset: true, replace: true });
-            reloadCurrent();
-          }}
         />
+        <InlineStack align="end"><Button onClick={() => {
+          const usp = new URLSearchParams(location.search);
+          usp.set("hCursor", data.hashtag.nextCursorB64 || "");
+          usp.set("hSize", String(data.hashtag.pageSize || 10));
+          navigate(`?${usp.toString()}#hashtag`, { preventScrollReset: true, replace: true });
+        }}>下一页</Button></InlineStack>
 
         <Divider />
 
-        {/* Mentions —— 游标分页 */}
         <div id="mentions" />
-        <SectionMentions
+        <Section
           title="📣 Mentions（@）"
           source="tag"
-          data={mentions}
-          products={products}
+          pool={data.mentions.items}
+          visible={data.mentions.visible}
+          products={data.products}
           saver={saver}
-          onNext={() => {
-            const usp = new URLSearchParams(window.location.search);
-            if (mentions.nextAfter) usp.set("tAfter", mentions.nextAfter);
-            usp.set("tSize", String(mentions.pageSize || 10));
-            navigate(`?${usp.toString()}#mentions`, { preventScrollReset: true, replace: true });
-            reloadCurrent();
-          }}
         />
+        <InlineStack align="end"><Button onClick={() => {
+          const usp = new URLSearchParams(location.search);
+          if (data.mentions.nextAfter) usp.set("tAfter", data.mentions.nextAfter);
+          usp.set("tSize", String(data.mentions.pageSize || 10));
+          navigate(`?${usp.toString()}#mentions`, { preventScrollReset: true, replace: true });
+        }}>下一页</Button></InlineStack>
       </BlockStack>
     </Page>
   );
 }
 
-/* ----------------- Hashtag 区块 ----------------- */
-function SectionHashtag({ title, source, data, products, saver, onNext }) {
-  const { items, visible } = data;
+function Section({ title, source, pool, visible, products, saver }) {
   const initialSelected = useMemo(() => {
     const m = new Map(); (visible || []).forEach(v => m.set(v.id, v)); return m;
   }, [visible]);
   const [selected, setSelected] = useState(initialSelected);
 
-  const toggle = (id, seed) => {
-    setSelected(prev => {
-      const next = new Map(prev);
-      if (next.has(id)) next.delete(id);
-      else next.set(id, seedToVisible(seed));
-      return next;
-    });
-  };
-  const changeCategory = (id, category) => setSelected(prev => {
-    const n = new Map(prev); if (n.has(id)) n.get(id).category = category; return n;
+  const toggle = (id, seed) => setSelected(prev => {
+    const n = new Map(prev);
+    if (n.has(id)) n.delete(id);
+    else n.set(id, seedToVisible(seed));
+    return n;
   });
-  const changeProducts = (id, handle) => setSelected(prev => {
-    const n = new Map(prev); if (n.has(id)) n.get(id).products = handle ? [handle] : []; return n;
-  });
+
+  const changeCategory = (id, category) =>
+    setSelected(prev => { const n = new Map(prev); if (n.has(id)) n.get(id).category = category; return n; });
+
+  const changeProducts = (id, handle) =>
+    setSelected(prev => { const n = new Map(prev); if (n.has(id)) n.get(id).products = handle ? [handle] : []; return n; });
 
   return (
     <saver.Form method="post">
       <input type="hidden" name="source" value={source} />
-      <InlineStack align="space-between" blockAlign="center">
+      <InlineStack align="space-between">
         <Text as="h2" variant="headingLg">{title}</Text>
         <Button submit primary>保存到可见列表（{source}）</Button>
       </InlineStack>
 
-      <UGCGrid source={source} pool={items} products={products} selected={selected}
-               onToggle={toggle} onChangeCategory={changeCategory} onChangeProducts={changeProducts} />
+      <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 24 }}>
+        {pool.map((item) => {
+          const isVideo = item.media_type === "VIDEO";
+          const picked = selected.get(item.id);
+          const isChecked = !!picked;
+          const category = picked?.category || "camping";
+          const chosenProducts = picked?.products || [];
 
-      <InlineStack align="end" gap="200" style={{ marginTop: 16 }}>
-        <Button onClick={onNext}>下一页</Button>
-      </InlineStack>
+          // # 直链；@ 用代理
+          const hashtagThumb = item.thumbnail_url || item.media_url || "";
+          const hashtagRaw   = item.media_url || "";
+          const tagThumbProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=thumb&source=tag&permalink=${encodeURIComponent(item.permalink || "")}`;
+          const tagRawProxy   = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=raw&source=tag&permalink=${encodeURIComponent(item.permalink || "")}`;
+
+          const imgSrc   = source === "hashtag" ? (hashtagThumb || "") : tagThumbProxy;
+          const videoSrc = source === "hashtag" ? (hashtagRaw || "")   : tagRawProxy;
+
+          return (
+            <Card key={`${source}-${item.id}`} padding="400">
+              <BlockStack gap="200">
+                <InlineStack gap="200" blockAlign="center">
+                  {source === "hashtag" ? <Tag>#{item.hashtag || "hashtag"}</Tag> : <Tag>@mention</Tag>}
+                  <Text as="span" variant="bodySm" tone="subdued">{item.timestamp ? new Date(item.timestamp).toLocaleString() : ""}</Text>
+                  {item.username && <Text as="span" variant="bodySm" tone="subdued">@{item.username}</Text>}
+                </InlineStack>
+
+                <a href={item.permalink} target="_blank" rel="noreferrer">
+                  {isVideo ? (
+                    <video controls muted preload="metadata" playsInline style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}>
+                      <source src={videoSrc} type="video/mp4" />
+                    </video>
+                  ) : (
+                    <img
+                      src={imgSrc}
+                      alt="UGC"
+                      loading="lazy"
+                      decoding="async"
+                      referrerPolicy="no-referrer"
+                      style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
+                    />
+                  )}
+                </a>
+
+                <Text variant="bodySm" as="p">{(item.caption || "无描述").slice(0, 160)}{item.caption && item.caption.length > 160 ? "…" : ""}</Text>
+
+                <Checkbox label="展示在前台" checked={isChecked} onChange={() => toggle(item.id, item)} />
+
+                {isChecked && <>
+                  <Select label="分类" options={CATEGORY_OPTIONS} value={category} onChange={(v) => changeCategory(item.id, v)} />
+                  <Select label="关联产品" options={products.map((p) => ({ label: p.title, value: p.handle }))} value={chosenProducts[0] || ""} onChange={(v) => changeProducts(item.id, v)} />
+                  <input type="hidden" name="ugc_entry" value={JSON.stringify({
+                    id: item.id, category, products: chosenProducts, username: item.username, timestamp: item.timestamp,
+                    media_type: item.media_type, media_url: item.media_url, thumbnail_url: item.thumbnail_url, caption: item.caption, permalink: item.permalink,
+                  })} />
+                </>}
+              </BlockStack>
+            </Card>
+          );
+        })}
+      </div>
     </saver.Form>
   );
 }
 
-/* ----------------- Mentions 区块 ----------------- */
-function SectionMentions({ title, source, data, products, saver, onNext }) {
-  const { items, visible } = data;
-  const initialSelected = useMemo(() => {
-    const m = new Map(); (visible || []).forEach(v => m.set(v.id, v)); return m;
-  }, [visible]);
-  const [selected, setSelected] = useState(initialSelected);
-
-  const toggle = (id, seed) => {
-    setSelected(prev => {
-      const next = new Map(prev);
-      if (next.has(id)) next.delete(id);
-      else next.set(id, seedToVisible(seed));
-      return next;
-    });
-  };
-  const changeCategory = (id, category) => setSelected(prev => {
-    const n = new Map(prev); if (n.has(id)) n.get(id).category = category; return n;
-  });
-  const changeProducts = (id, handle) => setSelected(prev => {
-    const n = new Map(prev); if (n.has(id)) n.get(id).products = handle ? [handle] : []; return n;
-  });
-
-  return (
-    <saver.Form method="post">
-      <input type="hidden" name="source" value={source} />
-      <InlineStack align="space-between" blockAlign="center">
-        <Text as="h2" variant="headingLg">{title}</Text>
-        <Button submit primary>保存到可见列表（{source}）</Button>
-      </InlineStack>
-
-      <UGCGrid source={source} pool={items} products={products} selected={selected}
-               onToggle={toggle} onChangeCategory={changeCategory} onChangeProducts={changeProducts} />
-
-      <InlineStack align="end" gap="200" style={{ marginTop: 16 }}>
-        <Button onClick={onNext}>下一页</Button>
-      </InlineStack>
-    </saver.Form>
-  );
-}
-
-/* ----------------- 共用网格（⚠️ hashtag 不走媒体代理） ----------------- */
-function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory, onChangeProducts }) {
-  const FALLBACK = "/ugc-fallback.png"; // 放到 public/ 目录
-
-  return (
-    <div
-      style={{
-        marginTop: 16,
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
-        gap: 24,
-      }}
-    >
-      {pool.map((item) => {
-        const isVideo = item.media_type === "VIDEO";
-        const picked = selected.get(item.id);
-        const isChecked = !!picked;
-        const category = picked?.category || "camping";
-        const chosenProducts = picked?.products || [];
-
-        // ✅ hashtag 直接用直链；mentions 才用 /api/ig/media（你现有代理）
-        const hashtagThumb = item.thumbnail_url || item.media_url || "";
-        const hashtagRaw   = item.media_url || "";
-
-        const tagThumbProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=thumb&source=tag&permalink=${encodeURIComponent(item.permalink || "")}`;
-        const tagRawProxy   = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=raw&source=tag&permalink=${encodeURIComponent(item.permalink || "")}`;
-
-        const imgSrc   = source === "hashtag" ? (hashtagThumb || FALLBACK) : tagThumbProxy;
-        const videoSrc = source === "hashtag" ? (hashtagRaw || "")        : tagRawProxy;
-
-        return (
-          <Card key={`${source}-${item.id}`} padding="400">
-            <BlockStack gap="200">
-              <InlineStack gap="200" blockAlign="center">
-                {source === "hashtag" ? <Tag>#{item.hashtag || "hashtag"}</Tag> : <Tag>@mention</Tag>}
-                <Text as="span" variant="bodySm" tone="subdued">
-                  {item.timestamp ? new Date(item.timestamp).toLocaleString() : ""}
-                </Text>
-                {item.username && (
-                  <Text as="span" variant="bodySm" tone="subdued">@{item.username}</Text>
-                )}
-              </InlineStack>
-
-              <a href={item.permalink} target="_blank" rel="noreferrer">
-                {isVideo ? (
-                  <video
-                    controls
-                    muted
-                    preload="metadata"
-                    playsInline
-                    style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
-                    onError={(e) => { e.currentTarget.poster = FALLBACK; }}
-                  >
-                    <source src={videoSrc} type="video/mp4" />
-                  </video>
-                ) : (
-                  <img
-                    src={imgSrc}
-                    alt="UGC"
-                    loading="lazy"
-                    decoding="async"
-                    referrerPolicy="no-referrer"
-                    style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
-                    onError={(e) => { e.currentTarget.src = FALLBACK; }}
-                  />
-                )}
-              </a>
-
-              <Text variant="bodySm" as="p">
-                {(item.caption || "无描述").slice(0, 160)}
-                {item.caption && item.caption.length > 160 ? "…" : ""}
-              </Text>
-
-              <Checkbox label="展示在前台" checked={isChecked} onChange={() => onToggle(item.id, item)} />
-
-              {isChecked && (
-                <>
-                  <Select
-                    label="分类"
-                    options={CATEGORY_OPTIONS}
-                    value={category}
-                    onChange={(value) => onChangeCategory(item.id, value)}
-                  />
-                  <Select
-                    label="关联产品"
-                    options={products.map((p) => ({ label: p.title, value: p.handle }))}
-                    value={chosenProducts[0] || ""}
-                    onChange={(value) => onChangeProducts(item.id, value)}
-                  />
-                  <input
-                    type="hidden"
-                    name="ugc_entry"
-                    value={JSON.stringify({
-                      id: item.id,
-                      category,
-                      products: chosenProducts,
-                      username: item.username,
-                      timestamp: item.timestamp,
-                      media_type: item.media_type,
-                      media_url: item.media_url,
-                      thumbnail_url: item.thumbnail_url,
-                      caption: item.caption,
-                      permalink: item.permalink,
-                    })}
-                  />
-                </>
-              )}
-            </BlockStack>
-          </Card>
-        );
-      })}
-    </div>
-  );
-}
-
-function seedToVisible(seed, overrides = {}) {
+function seedToVisible(seed) {
   return {
     category: "camping",
     products: [],
@@ -458,6 +244,5 @@ function seedToVisible(seed, overrides = {}) {
     thumbnail_url: seed.thumbnail_url || "",
     caption: seed.caption || "",
     permalink: seed.permalink || "",
-    ...overrides,
   };
 }
