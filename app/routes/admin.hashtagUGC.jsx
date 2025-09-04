@@ -1,5 +1,10 @@
-import { json, redirect } from "@remix-run/node";
-import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
+import { json } from "@remix-run/node";
+import {
+  useLoaderData,
+  useFetcher,
+  useNavigate,
+  useLocation,
+} from "@remix-run/react";
 import {
   Page,
   Card,
@@ -12,8 +17,9 @@ import {
   BlockStack,
   Divider,
   TextField,
+  Spinner,
 } from "@shopify/polaris";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import fs from "fs/promises";
 import path from "path";
 
@@ -46,30 +52,22 @@ async function readJsonSafe(file, fallback = "[]") {
   }
 }
 
-/* ----------------- Loader ----------------- */
+/* ----------------- Loader：读取本地缓存 + 独立分页 ----------------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
 
-  // Hashtag 参数
+  // Hashtag
   const hPage = Math.max(1, Number(url.searchParams.get("hPage") || 1));
   const hSize = Math.min(60, Math.max(12, Number(url.searchParams.get("hSize") || 24)));
   const hQ = (url.searchParams.get("hQ") || "").toLowerCase();
 
-  // Mentions 参数
+  // Mentions
   const tPage = Math.max(1, Number(url.searchParams.get("tPage") || 1));
   const tSize = Math.min(60, Math.max(12, Number(url.searchParams.get("tSize") || 24)));
   const tQ = (url.searchParams.get("tQ") || "").toLowerCase();
 
   const HASHTAG_FILE = path.resolve("public/hashtag_ugc.json");
   const TAG_FILE = path.resolve("public/tag_ugc.json");
-
-  // 缓存过期检查
-  const statOrNull = async (p) => fs.stat(p).catch(() => null);
-  const [hs, ts] = await Promise.all([statOrNull(HASHTAG_FILE), statOrNull(TAG_FILE)]);
-  const now = Date.now();
-  const staleMs = 10 * 60 * 1000;
-
-
 
   const hashtagPool = await readJsonSafe(HASHTAG_FILE);
   const tagPool = await readJsonSafe(TAG_FILE);
@@ -80,7 +78,7 @@ export async function loader({ request }) {
 
   const products = await readJsonSafe(path.resolve("public/products.json"), "[]");
 
-  // Hashtag 分页
+  // hashtag 分页
   let hFiltered = hashtagPool.slice();
   if (hQ) {
     hFiltered = hFiltered.filter(
@@ -95,7 +93,7 @@ export async function loader({ request }) {
   const hOffset = (hPage - 1) * hSize;
   const hItems = hFiltered.slice(hOffset, hOffset + hSize);
 
-  // Mentions 分页
+  // mentions 分页
   let tFiltered = tagPool.slice();
   if (tQ) {
     tFiltered = tFiltered.filter(
@@ -113,20 +111,23 @@ export async function loader({ request }) {
     hashtag: { page: hPage, pageSize: hSize, total: hTotal, q: hQ, items: hItems, visible: hashtagVisible },
     mentions: { page: tPage, pageSize: tSize, total: tTotal, q: tQ, items: tItems, visible: tagVisible },
     products,
-  });
+  }, { headers: { "Cache-Control": "no-store" } });
 }
 
-/* ----------------- Action ----------------- */
+/* ----------------- Action：保存 / 手动刷新（不跳页） ----------------- */
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
+
+  // 手动刷新：触发抓取（不重定向，不跳页）
   if (op === "refresh") {
     fetchHashtagUGC({ strategy: "top", limit: 120, outfile: "public/hashtag_ugc.json" }).catch(() => {});
     fetchTagUGC({ limit: 120, outfile: "public/tag_ugc.json" }).catch(() => {});
-    return redirect("/admin/ugc");
+    return json({ ok: true });
   }
 
-  const source = fd.get("source");
+  // 保存可见列表
+  const source = fd.get("source"); // 'hashtag' | 'tag'
   const entries = fd.getAll("ugc_entry").map((s) => JSON.parse(s));
 
   const map = new Map();
@@ -154,35 +155,78 @@ export async function action({ request }) {
     await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(list, null, 2), "utf-8");
   }
 
-  return redirect("/admin/ugc");
+  return json({ ok: true });
 }
 
 /* ----------------- 页面组件 ----------------- */
-export default function AdminUGC() {
-  const { hashtag, mentions, products } = useLoaderData();
-  const fetcher = useFetcher();
+export default function AdminHashtagUGC() {
+  const initial = useLoaderData();            // 首屏（SSR）数据
+  const [data, setData] = useState(initial);  // 最新（CSR）数据：用 fetcher.load 拉
+  const [firstLoaded, setFirstLoaded] = useState(false);
+
+  // 三个 fetcher：分页读（pager）、手动刷新（refresher）、保存（saver）
+  const pager = useFetcher();
+  const refresher = useFetcher();
+  const saver = useFetcher();
+
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // 打自己路由的 loader 来“像调 API 一样”拉数据
+  const fetchPage = () => pager.load(`${location.pathname}${location.search}`);
+
+  // 首次进入 + 每次查询参数变化，都拉一遍（确保进入/刷新都拿到第一页）
+  useEffect(() => {
+    fetchPage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
+
+  // pager 返回后，更新本地状态
+  useEffect(() => {
+    if (pager.data) {
+      setData(pager.data);
+      setFirstLoaded(true);
+    }
+  }, [pager.data]);
+
+  // 手动刷新完成 → 就地拉当前查询参数对应的页（不跳页）
+  useEffect(() => {
+    if (refresher.state === "idle" && refresher.data?.ok) {
+      fetchPage();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refresher.state, refresher.data]);
+
+  const { hashtag, mentions, products } = data;
 
   return (
     <Page title="UGC 管理（# 与 @ 分开分页）">
       <InlineStack align="space-between" blockAlign="center">
-        <Text as="h1" variant="headingLg">
-          UGC 管理（# 与 @ 分开分页）
-        </Text>
-        <fetcher.Form method="post">
+        <Text as="h1" variant="headingLg">UGC 管理（# 与 @ 分开分页）</Text>
+        <refresher.Form method="post">
           <input type="hidden" name="op" value="refresh" />
-          <Button submit>手动刷新池子</Button>
-        </fetcher.Form>
+          <Button submit loading={refresher.state !== "idle"}>手动刷新池子</Button>
+        </refresher.Form>
       </InlineStack>
 
+      {(pager.state !== "idle" || !firstLoaded) && (
+        <InlineStack align="center" blockAlign="center" style={{ margin: "12px 0" }}>
+          <Spinner accessibilityLabel="加载中" size="small" />
+          <Text variant="bodySm" tone="subdued" as="span" style={{ marginLeft: 8 }}>
+            加载页数据…
+          </Text>
+        </InlineStack>
+      )}
+
       <BlockStack gap="600">
+        <div id="hashtag" />
         <SectionBlock
           title="🏷️ Hashtag（#）"
           source="hashtag"
           pool={hashtag.items}
           visible={hashtag.visible}
           products={products}
-          fetcher={fetcher}
+          fetcher={saver}
           total={hashtag.total}
           page={hashtag.page}
           pageSize={hashtag.pageSize}
@@ -192,19 +236,20 @@ export default function AdminUGC() {
             usp.set("hPage", String(params.page ?? hashtag.page));
             usp.set("hSize", String(params.pageSize ?? hashtag.pageSize));
             if (params.q !== undefined) usp.set("hQ", params.q);
-            navigate(`?${usp.toString()}`);
+            navigate(`?${usp.toString()}#hashtag`, { preventScrollReset: true, replace: true });
           }}
         />
 
         <Divider />
 
+        <div id="mentions" />
         <SectionBlock
           title="📣 Mentions（@）"
           source="tag"
           pool={mentions.items}
           visible={mentions.visible}
           products={products}
-          fetcher={fetcher}
+          fetcher={saver}
           total={mentions.total}
           page={mentions.page}
           pageSize={mentions.pageSize}
@@ -214,7 +259,7 @@ export default function AdminUGC() {
             usp.set("tPage", String(params.page ?? mentions.page));
             usp.set("tSize", String(params.pageSize ?? mentions.pageSize));
             if (params.q !== undefined) usp.set("tQ", params.q);
-            navigate(`?${usp.toString()}`);
+            navigate(`?${usp.toString()}#mentions`, { preventScrollReset: true, replace: true });
           }}
         />
       </BlockStack>
@@ -222,7 +267,7 @@ export default function AdminUGC() {
   );
 }
 
-/* ----------------- SectionBlock ----------------- */
+/* ----------------- 通用区块 ----------------- */
 function SectionBlock({ title, source, pool, visible, products, fetcher, total, page, pageSize, q, onNavigate }) {
   const initialSelected = useMemo(() => {
     const m = new Map();
@@ -275,9 +320,7 @@ function SectionBlock({ title, source, pool, visible, products, fetcher, total, 
       <input type="hidden" name="source" value={source} />
 
       <InlineStack align="space-between" blockAlign="center">
-        <Text as="h2" variant="headingLg">
-          {title}
-        </Text>
+        <Text as="h2" variant="headingLg">{title}</Text>
         <InlineStack gap="200" blockAlign="center">
           <TextField
             placeholder="搜索 caption / 用户 / 标签"
@@ -285,9 +328,7 @@ function SectionBlock({ title, source, pool, visible, products, fetcher, total, 
             onChange={(v) => setSearch(v)}
             onBlur={() => onNavigate({ page: 1, q: search })}
           />
-          <Button submit primary>
-            保存到可见列表（{source}）
-          </Button>
+          <Button submit primary>保存到可见列表（{source}）</Button>
         </InlineStack>
       </InlineStack>
 
@@ -305,8 +346,10 @@ function SectionBlock({ title, source, pool, visible, products, fetcher, total, 
           const isChecked = !!picked;
           const category = picked?.category || "camping";
           const chosenProducts = picked?.products || [];
+
           const thumbProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=thumb&source=${source}&permalink=${encodeURIComponent(item.permalink || "")}`;
-          const rawProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=raw&source=${source}&permalink=${encodeURIComponent(item.permalink || "")}`;
+          const rawProxy   = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=raw&source=${source}&permalink=${encodeURIComponent(item.permalink || "")}`;
+
           return (
             <Card key={`${source}-${item.id}`} padding="400">
               <BlockStack gap="200">
@@ -316,15 +359,18 @@ function SectionBlock({ title, source, pool, visible, products, fetcher, total, 
                     {item.timestamp ? new Date(item.timestamp).toLocaleString() : ""}
                   </Text>
                   {item.username && (
-                    <Text as="span" variant="bodySm" tone="subdued">
-                      @{item.username}
-                    </Text>
+                    <Text as="span" variant="bodySm" tone="subdued">@{item.username}</Text>
                   )}
                 </InlineStack>
 
                 <a href={item.permalink} target="_blank" rel="noreferrer">
                   {isVideo ? (
-                    <video controls muted preload="metadata" style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}>
+                    <video
+                      controls
+                      muted
+                      preload="metadata"
+                      style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
+                    >
                       <source src={rawProxy} type="video/mp4" />
                     </video>
                   ) : (
@@ -355,14 +401,13 @@ function SectionBlock({ title, source, pool, visible, products, fetcher, total, 
                       value={category}
                       onChange={(value) => changeCategory(item.id, value)}
                     />
-
                     <Select
                       label="关联产品"
                       options={products.map((p) => ({ label: p.title, value: p.handle }))}
+
                       value={chosenProducts[0] || ""}
                       onChange={(value) => changeProducts(item.id, value)}
                     />
-
                     <input
                       type="hidden"
                       name="ugc_entry"
@@ -389,19 +434,9 @@ function SectionBlock({ title, source, pool, visible, products, fetcher, total, 
 
       <InlineStack align="end" gap="200" style={{ marginTop: 16 }}>
         <Text as="span">共 {total} 条</Text>
-        <Button disabled={page <= 1} onClick={() => onNavigate({ page: page - 1 })}>
-          上一页
-        </Button>
-        <Button disabled={page * pageSize >= total} onClick={() => onNavigate({ page: page + 1 })}>
-          下一页
-        </Button>
+        <Button disabled={page <= 1} onClick={() => onNavigate({ page: page - 1 })}>上一页</Button>
+        <Button disabled={page * pageSize >= total} onClick={() => onNavigate({ page: page + 1 })}>下一页</Button>
       </InlineStack>
-
-      <div style={{ marginTop: 16 }}>
-        <Button submit primary>
-          保存到可见列表（{source}）
-        </Button>
-      </div>
     </fetcher.Form>
   );
 }
