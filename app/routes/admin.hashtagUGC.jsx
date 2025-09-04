@@ -1,6 +1,5 @@
-// app/routes/admin.ugc.jsx
 import { json, redirect } from "@remix-run/node";
-import { useLoaderData, useFetcher } from "@remix-run/react";
+import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
 import {
   Page,
   Card,
@@ -12,6 +11,7 @@ import {
   InlineStack,
   BlockStack,
   Divider,
+  TextField,
 } from "@shopify/polaris";
 import { useMemo, useState } from "react";
 import fs from "fs/promises";
@@ -24,10 +24,9 @@ import {
   ensureVisibleTagFile,
 } from "../lib/persistPaths.js";
 
-import { fetchHashtagUGC } from "../lib/fetchHashtagUGC.js";
-import { fetchTagUGC } from "../lib/fetchHashtagUGC.js";
+import { fetchHashtagUGC, fetchTagUGC } from "../lib/fetchHashtagUGC.js";
 
-/* ----------------- 配置：分类选项 ----------------- */
+/* ----------------- 分类选项 ----------------- */
 const CATEGORY_OPTIONS = [
   { label: "Camping Life", value: "camping" },
   { label: "Off-Road", value: "off-road" },
@@ -37,7 +36,7 @@ const CATEGORY_OPTIONS = [
   { label: "Events", value: "events" },
 ];
 
-/* ----------------- 工具：容错读取 JSON ----------------- */
+/* ----------------- 工具函数 ----------------- */
 async function readJsonSafe(file, fallback = "[]") {
   try {
     const raw = await fs.readFile(file, "utf-8");
@@ -47,36 +46,98 @@ async function readJsonSafe(file, fallback = "[]") {
   }
 }
 
-/* ----------------- Loader：两路池子一起准备 ----------------- */
-export async function loader() {
-  // 拉最新候选（可按需改策略/limit）
-  await Promise.all([
-    fetchHashtagUGC({ strategy: "top", limit: 120, outfile: "public/hashtag_ugc.json" }),
-    fetchTagUGC({ limit: 120, outfile: "public/tag_ugc.json" }),
-  ]);
+/* ----------------- Loader ----------------- */
+export async function loader({ request }) {
+  const url = new URL(request.url);
 
-  // 候选池
-  const hashtagPool = await readJsonSafe(path.resolve("public/hashtag_ugc.json"));
-  const tagPool     = await readJsonSafe(path.resolve("public/tag_ugc.json"));
+  // Hashtag 参数
+  const hPage = Math.max(1, Number(url.searchParams.get("hPage") || 1));
+  const hSize = Math.min(60, Math.max(12, Number(url.searchParams.get("hSize") || 24)));
+  const hQ = (url.searchParams.get("hQ") || "").toLowerCase();
 
-  // 已选池
+  // Mentions 参数
+  const tPage = Math.max(1, Number(url.searchParams.get("tPage") || 1));
+  const tSize = Math.min(60, Math.max(12, Number(url.searchParams.get("tSize") || 24)));
+  const tQ = (url.searchParams.get("tQ") || "").toLowerCase();
+
+  const HASHTAG_FILE = path.resolve("public/hashtag_ugc.json");
+  const TAG_FILE = path.resolve("public/tag_ugc.json");
+
+  // 缓存过期检查
+  const statOrNull = async (p) => fs.stat(p).catch(() => null);
+  const [hs, ts] = await Promise.all([statOrNull(HASHTAG_FILE), statOrNull(TAG_FILE)]);
+  const now = Date.now();
+  const staleMs = 10 * 60 * 1000;
+
+  (async () => {
+    try {
+      if (!hs || now - hs.mtimeMs > staleMs) {
+        fetchHashtagUGC({ strategy: "top", limit: 120, outfile: "public/hashtag_ugc.json" });
+      }
+      if (!ts || now - ts.mtimeMs > staleMs) {
+        fetchTagUGC({ limit: 120, outfile: "public/tag_ugc.json" });
+      }
+    } catch {}
+  })();
+
+  const hashtagPool = await readJsonSafe(HASHTAG_FILE);
+  const tagPool = await readJsonSafe(TAG_FILE);
+
   await Promise.all([ensureVisibleHashtagFile(), ensureVisibleTagFile()]);
   const hashtagVisible = await readJsonSafe(VISIBLE_HASHTAG_PATH);
-  const tagVisible     = await readJsonSafe(VISIBLE_TAG_PATH);
+  const tagVisible = await readJsonSafe(VISIBLE_TAG_PATH);
 
-  // 产品选项（沿用你首页的 products.json）
   const products = await readJsonSafe(path.resolve("public/products.json"), "[]");
 
-  return json({ hashtagPool, tagPool, hashtagVisible, tagVisible, products });
+  // Hashtag 分页
+  let hFiltered = hashtagPool.slice();
+  if (hQ) {
+    hFiltered = hFiltered.filter(
+      (i) =>
+        (i.caption || "").toLowerCase().includes(hQ) ||
+        (i.username || "").toLowerCase().includes(hQ) ||
+        (i.hashtag || "").toLowerCase().includes(hQ)
+    );
+  }
+  hFiltered.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+  const hTotal = hFiltered.length;
+  const hOffset = (hPage - 1) * hSize;
+  const hItems = hFiltered.slice(hOffset, hOffset + hSize);
+
+  // Mentions 分页
+  let tFiltered = tagPool.slice();
+  if (tQ) {
+    tFiltered = tFiltered.filter(
+      (i) =>
+        (i.caption || "").toLowerCase().includes(tQ) ||
+        (i.username || "").toLowerCase().includes(tQ)
+    );
+  }
+  tFiltered.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+  const tTotal = tFiltered.length;
+  const tOffset = (tPage - 1) * tSize;
+  const tItems = tFiltered.slice(tOffset, tOffset + tSize);
+
+  return json({
+    hashtag: { page: hPage, pageSize: hSize, total: hTotal, q: hQ, items: hItems, visible: hashtagVisible },
+    mentions: { page: tPage, pageSize: tSize, total: tTotal, q: tQ, items: tItems, visible: tagVisible },
+    products,
+  });
 }
 
-/* ----------------- Action：按 source 写入各自 visible ----------------- */
+/* ----------------- Action ----------------- */
 export async function action({ request }) {
   const fd = await request.formData();
-  const source = fd.get("source"); // 'hashtag' | 'tag'
+  const op = fd.get("op");
+  if (op === "refresh") {
+    fetchHashtagUGC({ strategy: "top", limit: 120, outfile: "public/hashtag_ugc.json" }).catch(() => {});
+    fetchTagUGC({ limit: 120, outfile: "public/tag_ugc.json" }).catch(() => {});
+    return redirect("/admin/ugc");
+  }
+
+  const source = fd.get("source");
   const entries = fd.getAll("ugc_entry").map((s) => JSON.parse(s));
 
-  // 去重 + 只留必要字段（含兜底字段，便于前端）
   const map = new Map();
   for (const e of entries) {
     map.set(String(e.id), {
@@ -107,37 +168,71 @@ export async function action({ request }) {
 
 /* ----------------- 页面组件 ----------------- */
 export default function AdminUGC() {
-  const { hashtagPool, tagPool, hashtagVisible, tagVisible, products } = useLoaderData();
+  const { hashtag, mentions, products } = useLoaderData();
   const fetcher = useFetcher();
+  const navigate = useNavigate();
 
   return (
-    <Page title="UGC 管理（#Hashtag & @Mentions）">
-      <BlockStack gap="400">
+    <Page title="UGC 管理（# 与 @ 分开分页）">
+      <InlineStack align="space-between" blockAlign="center">
+        <Text as="h1" variant="headingLg">
+          UGC 管理（# 与 @ 分开分页）
+        </Text>
+        <fetcher.Form method="post">
+          <input type="hidden" name="op" value="refresh" />
+          <Button submit>手动刷新池子</Button>
+        </fetcher.Form>
+      </InlineStack>
+
+      <BlockStack gap="600">
         <SectionBlock
           title="🏷️ Hashtag（#）"
           source="hashtag"
-          pool={hashtagPool}
-          visible={hashtagVisible}
+          pool={hashtag.items}
+          visible={hashtag.visible}
           products={products}
           fetcher={fetcher}
+          total={hashtag.total}
+          page={hashtag.page}
+          pageSize={hashtag.pageSize}
+          q={hashtag.q}
+          onNavigate={(params) => {
+            const usp = new URLSearchParams(window.location.search);
+            usp.set("hPage", String(params.page ?? hashtag.page));
+            usp.set("hSize", String(params.pageSize ?? hashtag.pageSize));
+            if (params.q !== undefined) usp.set("hQ", params.q);
+            navigate(`?${usp.toString()}`);
+          }}
         />
+
         <Divider />
+
         <SectionBlock
           title="📣 Mentions（@）"
           source="tag"
-          pool={tagPool}
-          visible={tagVisible}
+          pool={mentions.items}
+          visible={mentions.visible}
           products={products}
           fetcher={fetcher}
+          total={mentions.total}
+          page={mentions.page}
+          pageSize={mentions.pageSize}
+          q={mentions.q}
+          onNavigate={(params) => {
+            const usp = new URLSearchParams(window.location.search);
+            usp.set("tPage", String(params.page ?? mentions.page));
+            usp.set("tSize", String(params.pageSize ?? mentions.pageSize));
+            if (params.q !== undefined) usp.set("tQ", params.q);
+            navigate(`?${usp.toString()}`);
+          }}
         />
       </BlockStack>
     </Page>
   );
 }
 
-/* ----------------- 可复用区块 ----------------- */
-function SectionBlock({ title, source, pool, visible, products, fetcher }) {
-  // Map<id, entry> 用于“是否勾选/默认分类/产品”
+/* ----------------- SectionBlock ----------------- */
+function SectionBlock({ title, source, pool, visible, products, fetcher, total, page, pageSize, q, onNavigate }) {
   const initialSelected = useMemo(() => {
     const m = new Map();
     (visible || []).forEach((v) => m.set(v.id, v));
@@ -145,6 +240,7 @@ function SectionBlock({ title, source, pool, visible, products, fetcher }) {
   }, [visible]);
 
   const [selected, setSelected] = useState(initialSelected);
+  const [search, setSearch] = useState(q || "");
 
   const toggle = (id, seed) => {
     setSelected((prev) => {
@@ -154,7 +250,6 @@ function SectionBlock({ title, source, pool, visible, products, fetcher }) {
         next.set(id, {
           category: "camping",
           products: [],
-          // 默认兜底字段带上，方便提交
           id: seed.id,
           username: seed.username || "",
           timestamp: seed.timestamp || "",
@@ -187,9 +282,22 @@ function SectionBlock({ title, source, pool, visible, products, fetcher }) {
   return (
     <fetcher.Form method="post">
       <input type="hidden" name="source" value={source} />
+
       <InlineStack align="space-between" blockAlign="center">
-        <Text as="h2" variant="headingLg">{title}</Text>
-        <Button submit primary>保存到可见列表（{source}）</Button>
+        <Text as="h2" variant="headingLg">
+          {title}
+        </Text>
+        <InlineStack gap="200" blockAlign="center">
+          <TextField
+            placeholder="搜索 caption / 用户 / 标签"
+            value={search}
+            onChange={(v) => setSearch(v)}
+            onBlur={() => onNavigate({ page: 1, q: search })}
+          />
+          <Button submit primary>
+            保存到可见列表（{source}）
+          </Button>
+        </InlineStack>
       </InlineStack>
 
       <div
@@ -200,111 +308,108 @@ function SectionBlock({ title, source, pool, visible, products, fetcher }) {
           gap: 24,
         }}
       >
-        {pool
-          .slice()
-          .sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""))
-          .map((item) => {
-            const isVideo = item.media_type === "VIDEO";
-            const picked = selected.get(item.id);
-            const isChecked = !!picked;
-            const category = picked?.category || "camping";
-            const chosenProducts = picked?.products || [];
-            const thumb = item.thumbnail_url || item.media_url;
+        {pool.map((item) => {
+          const isVideo = item.media_type === "VIDEO";
+          const picked = selected.get(item.id);
+          const isChecked = !!picked;
+          const category = picked?.category || "camping";
+          const chosenProducts = picked?.products || [];
+          const thumbProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=thumb`;
+          const rawProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=raw`;
 
-            return (
-              <Card key={`${source}-${item.id}`} padding="400">
-                <BlockStack gap="200">
-                  <InlineStack gap="200" blockAlign="center">
-                    {source === "hashtag" ? (
-                      <Tag>#{item.hashtag || "hashtag"}</Tag>
-                    ) : (
-                      <Tag>@mention</Tag>
-                    )}
-                    <Text as="span" variant="bodySm" tone="subdued">
-                      {item.timestamp ? new Date(item.timestamp).toLocaleString() : ""}
-                    </Text>
-                    {item.username && (
-                      <Text as="span" variant="bodySm" tone="subdued">
-                        @{item.username}
-                      </Text>
-                    )}
-                  </InlineStack>
-
-                  <a href={item.permalink} target="_blank" rel="noreferrer">
-                    {isVideo ? (
-                      <video
-                        controls
-                        muted
-                        style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
-                      >
-                        <source src={item.media_url} type="video/mp4" />
-                      </video>
-                    ) : (
-                      <img
-                        src={thumb}
-                        alt="UGC"
-                        style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
-                      />
-                    )}
-                  </a>
-
-                  <Text variant="bodySm" as="p">
-                    {item.caption || "无描述"}
+          return (
+            <Card key={`${source}-${item.id}`} padding="400">
+              <BlockStack gap="200">
+                <InlineStack gap="200" blockAlign="center">
+                  {source === "hashtag" ? <Tag>#{item.hashtag || "hashtag"}</Tag> : <Tag>@mention</Tag>}
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    {item.timestamp ? new Date(item.timestamp).toLocaleString() : ""}
                   </Text>
-
-                  <Checkbox
-                    label="展示在前台"
-                    checked={isChecked}
-                    onChange={() => toggle(item.id, item)}
-                  />
-
-                  {isChecked && (
-                    <>
-                      <Select
-                        label="分类"
-                        options={CATEGORY_OPTIONS}
-                        value={category}
-                        onChange={(value) => changeCategory(item.id, value)}
-                      />
-
-                      <Select
-                        label="关联产品"
-                        options={products.map((p) => ({ label: p.title, value: p.handle }))}
-                        value={chosenProducts[0] || ""}
-                        onChange={(value) => changeProducts(item.id, value)}
-                      />
-
-                      <input
-                        type="hidden"
-                        name="ugc_entry"
-                        value={JSON.stringify({
-                          id: item.id,
-                          category,
-                          products: chosenProducts,
-                          username: item.username,
-                          timestamp: item.timestamp,
-                          media_type: item.media_type,
-                          media_url: item.media_url,
-                          thumbnail_url: item.thumbnail_url,
-                          caption: item.caption,
-                          permalink: item.permalink,
-                        })}
-                      />
-                    </>
+                  {item.username && (
+                    <Text as="span" variant="bodySm" tone="subdued">
+                      @{item.username}
+                    </Text>
                   )}
-                </BlockStack>
-              </Card>
-            );
-          })}
+                </InlineStack>
+
+                <a href={item.permalink} target="_blank" rel="noreferrer">
+                  {isVideo ? (
+                    <video controls muted preload="metadata" style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}>
+                      <source src={rawProxy} type="video/mp4" />
+                    </video>
+                  ) : (
+                    <img
+                      src={thumbProxy}
+                      alt="UGC"
+                      loading="lazy"
+                      width={640}
+                      height={200}
+                      style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
+                    />
+                  )}
+                </a>
+
+                <Text variant="bodySm" as="p">
+                  {(item.caption || "无描述").slice(0, 160)}
+                  {item.caption && item.caption.length > 160 ? "…" : ""}
+                </Text>
+
+                <Checkbox label="展示在前台" checked={isChecked} onChange={() => toggle(item.id, item)} />
+
+                {isChecked && (
+                  <>
+                    <Select
+                      label="分类"
+                      options={CATEGORY_OPTIONS}
+                      value={category}
+                      onChange={(value) => changeCategory(item.id, value)}
+                    />
+
+                    <Select
+                      label="关联产品"
+                      options={products.map((p) => ({ label: p.title, value: p.handle }))}
+                      value={chosenProducts[0] || ""}
+                      onChange={(value) => changeProducts(item.id, value)}
+                    />
+
+                    <input
+                      type="hidden"
+                      name="ugc_entry"
+                      value={JSON.stringify({
+                        id: item.id,
+                        category,
+                        products: chosenProducts,
+                        username: item.username,
+                        timestamp: item.timestamp,
+                        media_type: item.media_type,
+                        media_url: item.media_url,
+                        thumbnail_url: item.thumbnail_url,
+                        caption: item.caption,
+                        permalink: item.permalink,
+                      })}
+                    />
+                  </>
+                )}
+              </BlockStack>
+            </Card>
+          );
+        })}
       </div>
 
+      <InlineStack align="end" gap="200" style={{ marginTop: 16 }}>
+        <Text as="span">共 {total} 条</Text>
+        <Button disabled={page <= 1} onClick={() => onNavigate({ page: page - 1 })}>
+          上一页
+        </Button>
+        <Button disabled={page * pageSize >= total} onClick={() => onNavigate({ page: page + 1 })}>
+          下一页
+        </Button>
+      </InlineStack>
+
       <div style={{ marginTop: 16 }}>
-        <Button submit primary>保存到可见列表（{source}）</Button>
-        {fetcher.state === "idle" && fetcher.data?.ok && (
-          <Text variant="bodyMd" tone="success" style={{ marginLeft: 12 }}>
-            ✅ 保存成功！
-          </Text>
-        )}
+        <Button submit primary>
+          保存到可见列表（{source}）
+        </Button>
       </div>
     </fetcher.Form>
   );
