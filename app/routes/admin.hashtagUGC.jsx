@@ -332,8 +332,12 @@ function SectionMentions({ title, source, data, products, saver, onNext }) {
   );
 }
 
-/* ----------------- 共享网格 ----------------- */
+/* ----------------- 共享网格（修复 media 与 fallback） ----------------- */
 function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory, onChangeProducts }) {
+  // 一个极小的内联占位图（灰底 1x1 PNG），避免 404 路由：
+  const FALLBACK_DATA_URI =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
+
   return (
     <div
       style={{
@@ -350,8 +354,15 @@ function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory,
         const category = picked?.category || "camping";
         const chosenProducts = picked?.products || [];
 
-        const thumbProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=thumb&source=${source}&permalink=${encodeURIComponent(item.permalink || "")}`;
-        const rawProxy   = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=raw&source=${source}&permalink=${encodeURIComponent(item.permalink || "")}`;
+        // ✅ 关键：hashtag 不用 /api/ig/media；mentions 才用
+        const hashtagThumb = item.thumbnail_url || item.media_url || "";
+        const hashtagRaw   = item.media_url || "";
+
+        const tagThumbProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=thumb&source=tag&permalink=${encodeURIComponent(item.permalink || "")}`;
+        const tagRawProxy   = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=raw&source=tag&permalink=${encodeURIComponent(item.permalink || "")}`;
+
+        const imgSrc  = source === "hashtag" ? hashtagThumb : tagThumbProxy;
+        const videoSrc= source === "hashtag" ? hashtagRaw   : tagRawProxy;
 
         return (
           <Card key={`${source}-${item.id}`} padding="400">
@@ -372,19 +383,22 @@ function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory,
                     controls
                     muted
                     preload="metadata"
+                    playsInline
                     style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
+                    // 对 hashtag 的直链视频，部分会 403；让浏览器自己降级就好
+                    onError={(e) => { e.currentTarget.poster = FALLBACK_DATA_URI; }}
                   >
-                    <source src={rawProxy} type="video/mp4" />
+                    <source src={videoSrc} type="video/mp4" />
                   </video>
                 ) : (
                   <img
-                    src={thumbProxy}
+                    src={imgSrc || FALLBACK_DATA_URI}
                     alt="UGC"
                     loading="lazy"
-                    width={640}
-                    height={200}
+                    decoding="async"
+                    referrerPolicy="no-referrer"
                     style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
-                    onError={(e) => { e.currentTarget.src = "/static/ugc-fallback.png"; }}
+                    onError={(e) => { e.currentTarget.src = FALLBACK_DATA_URI; }}
                   />
                 )}
               </a>
@@ -413,7 +427,18 @@ function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory,
                   <input
                     type="hidden"
                     name="ugc_entry"
-                    value={JSON.stringify(seedToVisible(item, { category, products: chosenProducts }))}
+                    value={JSON.stringify({
+                      id: item.id,
+                      category,
+                      products: chosenProducts,
+                      username: item.username,
+                      timestamp: item.timestamp,
+                      media_type: item.media_type,
+                      media_url: item.media_url,
+                      thumbnail_url: item.thumbnail_url,
+                      caption: item.caption,
+                      permalink: item.permalink,
+                    })}
                   />
                 </>
               )}
@@ -424,6 +449,7 @@ function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory,
     </div>
   );
 }
+
 
 function seedToVisible(seed, overrides = {}) {
   return {
