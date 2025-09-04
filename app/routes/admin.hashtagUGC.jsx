@@ -69,16 +69,7 @@ export async function loader({ request }) {
   const now = Date.now();
   const staleMs = 10 * 60 * 1000;
 
-  (async () => {
-    try {
-      if (!hs || now - hs.mtimeMs > staleMs) {
-        fetchHashtagUGC({ strategy: "top", limit: 120, outfile: "public/hashtag_ugc.json" });
-      }
-      if (!ts || now - ts.mtimeMs > staleMs) {
-        fetchTagUGC({ limit: 120, outfile: "public/tag_ugc.json" });
-      }
-    } catch {}
-  })();
+
 
   const hashtagPool = await readJsonSafe(HASHTAG_FILE);
   const tagPool = await readJsonSafe(TAG_FILE);
@@ -314,9 +305,8 @@ function SectionBlock({ title, source, pool, visible, products, fetcher, total, 
           const isChecked = !!picked;
           const category = picked?.category || "camping";
           const chosenProducts = picked?.products || [];
-          const thumbProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=thumb`;
-          const rawProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=raw`;
-
+          const thumbProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=thumb&source=${source}&permalink=${encodeURIComponent(item.permalink || "")}`;
+          const rawProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=raw&source=${source}&permalink=${encodeURIComponent(item.permalink || "")}`;
           return (
             <Card key={`${source}-${item.id}`} padding="400">
               <BlockStack gap="200">
@@ -345,6 +335,7 @@ function SectionBlock({ title, source, pool, visible, products, fetcher, total, 
                       width={640}
                       height={200}
                       style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
+                      onError={(e) => { e.currentTarget.src = "/static/ugc-fallback.png"; }}
                     />
                   )}
                 </a>
