@@ -1,3 +1,4 @@
+// app/routes/admin.hashtagugc.jsx
 import { json } from "@remix-run/node";
 import {
   useLoaderData,
@@ -58,17 +59,22 @@ async function readJsonSafe(file, fallback = "[]") {
 export async function loader({ request }) {
   const url = new URL(request.url);
 
+  // 识别预取；(已由 fetch* 函数内置缓存 coalescing 保护)
+  const purpose = request.headers.get("Purpose") || "";
+  const secPurpose = request.headers.get("Sec-Purpose") || "";
+  const isPrefetch = purpose.includes("prefetch") || secPurpose.includes("prefetch");
+  void isPrefetch; // 目前仅信息性
+
   // Hashtag：页大小 & 多标签游标（Base64 JSON：{ "<tag>": {topAfter, recentAfter} }）
-  const hSize = Math.min(60, Math.max(12, Number(url.searchParams.get("hSize") || 24)));
+  const hSize = Math.min(60, Math.max(6, Number(url.searchParams.get("hSize") || 12)));
   const hCursorB64 = url.searchParams.get("hCursor") || "";
   let hCursors = {};
   try { if (hCursorB64) hCursors = JSON.parse(Buffer.from(hCursorB64, "base64").toString("utf-8")); } catch {}
-
   const strategy = (url.searchParams.get("hStrategy") || "top"); // top|recent|both
   const tagsCsv = url.searchParams.get("hTags") || "";            // 为空则 fallback 到 env
 
   // Mentions：页大小 & 游标
-  const tSize = Math.min(60, Math.max(12, Number(url.searchParams.get("tSize") || 24)));
+  const tSize = Math.min(60, Math.max(6, Number(url.searchParams.get("tSize") || 12)));
   const tAfter = url.searchParams.get("tAfter") || "";
 
   await Promise.all([ensureVisibleHashtagFile(), ensureVisibleTagFile()]);
@@ -112,7 +118,7 @@ export async function loader({ request }) {
       },
       products,
     },
-    { headers: { "Cache-Control": "no-store" } }
+    { headers: { "Cache-Control": "private, max-age=30" } }
   );
 }
 
@@ -125,8 +131,8 @@ export async function action({ request }) {
     // 轻量预热：抓 hashtag & mentions 首页（失败不抛）
     try {
       await Promise.all([
-        fetchHashtagUGCPage({ limit: 24, strategy: "top" }),
-        fetchTagUGCPage({ limit: 24 }),
+        fetchHashtagUGCPage({ limit: 12, strategy: "top" }),
+        fetchTagUGCPage({ limit: 12 }),
       ]);
     } catch {}
     return json({ ok: true });
@@ -219,7 +225,7 @@ export default function AdminHashtagUGC() {
           onNext={() => {
             const usp = new URLSearchParams(window.location.search);
             usp.set("hCursor", hashtag.nextCursorB64 || "");
-            usp.set("hSize", String(hashtag.pageSize || 24));
+            usp.set("hSize", String(hashtag.pageSize || 12));
             if (hashtag.strategy) usp.set("hStrategy", hashtag.strategy);
             if (hashtag.tagsCsv) usp.set("hTags", hashtag.tagsCsv);
             navigate(`?${usp.toString()}#hashtag`, { preventScrollReset: true, replace: true });
@@ -240,7 +246,7 @@ export default function AdminHashtagUGC() {
           onNext={() => {
             const usp = new URLSearchParams(window.location.search);
             if (mentions.nextAfter) usp.set("tAfter", mentions.nextAfter);
-            usp.set("tSize", String(mentions.pageSize || 24));
+            usp.set("tSize", String(mentions.pageSize || 12));
             navigate(`?${usp.toString()}#mentions`, { preventScrollReset: true, replace: true });
             reloadCurrent();
           }}
@@ -334,7 +340,6 @@ function SectionMentions({ title, source, data, products, saver, onNext }) {
 
 /* ----------------- 共享网格（修复 media 与 fallback） ----------------- */
 function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory, onChangeProducts }) {
-  // 一个极小的内联占位图（灰底 1x1 PNG），避免 404 路由：
   const FALLBACK_DATA_URI =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
@@ -354,15 +359,15 @@ function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory,
         const category = picked?.category || "camping";
         const chosenProducts = picked?.products || [];
 
-        // ✅ 关键：hashtag 不用 /api/ig/media；mentions 才用
+        // ✅ hashtag 不用 /api/ig/media；mentions 才用代理以应对过期
         const hashtagThumb = item.thumbnail_url || item.media_url || "";
         const hashtagRaw   = item.media_url || "";
 
         const tagThumbProxy = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=thumb&source=tag&permalink=${encodeURIComponent(item.permalink || "")}`;
         const tagRawProxy   = `/api/ig/media?id=${encodeURIComponent(item.id)}&type=raw&source=tag&permalink=${encodeURIComponent(item.permalink || "")}`;
 
-        const imgSrc  = source === "hashtag" ? hashtagThumb : tagThumbProxy;
-        const videoSrc= source === "hashtag" ? hashtagRaw   : tagRawProxy;
+        const imgSrc   = source === "hashtag" ? (hashtagThumb || FALLBACK_DATA_URI) : tagThumbProxy;
+        const videoSrc = source === "hashtag" ? (hashtagRaw || "") : tagRawProxy;
 
         return (
           <Card key={`${source}-${item.id}`} padding="400">
@@ -385,14 +390,13 @@ function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory,
                     preload="metadata"
                     playsInline
                     style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
-                    // 对 hashtag 的直链视频，部分会 403；让浏览器自己降级就好
                     onError={(e) => { e.currentTarget.poster = FALLBACK_DATA_URI; }}
                   >
                     <source src={videoSrc} type="video/mp4" />
                   </video>
                 ) : (
                   <img
-                    src={imgSrc || FALLBACK_DATA_URI}
+                    src={imgSrc}
                     alt="UGC"
                     loading="lazy"
                     decoding="async"
@@ -449,7 +453,6 @@ function UGCGrid({ source, pool, products, selected, onToggle, onChangeCategory,
     </div>
   );
 }
-
 
 function seedToVisible(seed, overrides = {}) {
   return {

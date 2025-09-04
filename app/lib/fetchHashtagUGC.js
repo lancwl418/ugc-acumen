@@ -4,7 +4,7 @@ import fetch from "node-fetch";
 
 /**
  * 环境变量：
- * - PAGE_TOKEN                长效 Page Access Token（Business/系统令牌，用于 hashtag edges）
+ * - PAGE_TOKEN                长效 Page Access Token（用于 hashtag edges）
  * - INSTAGRAM_IG_ID           IG 业务账号 ID（1784...）
  * - INSTAGRAM_ACCESS_TOKEN    用户令牌（/tags、mentioned_media 用）
  * - HASHTAG(S)                可选：默认 "acumencamera"；也可配成 "tag1,tag2,tag3"
@@ -13,6 +13,20 @@ const PAGE_TOKEN = process.env.PAGE_TOKEN;
 const IG_ID = process.env.INSTAGRAM_IG_ID;
 const USER_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN;
 const DEFAULT_TAGS = (process.env.HASHTAGS || process.env.HASHTAG || "acumencamera");
+
+/* ==================== 进程内 30s 缓存 + 并发合并 ==================== */
+const _mem = new Map(); // key -> { expiry, promise }
+function withCache(key, ttlMs, factory) {
+  const now = Date.now();
+  const hit = _mem.get(key);
+  if (hit && hit.expiry > now) return hit.promise; // 命中缓存（并发合并）
+  const p = (async () => {
+    try { return await factory(); }
+    finally { /* 失败不保留坏 Promise */ }
+  })();
+  _mem.set(key, { expiry: now + ttlMs, promise: p });
+  return p;
+}
 
 /* ==================== 你现有的用户媒体抓取（保留） ==================== */
 const igUserToken = USER_TOKEN;
@@ -52,7 +66,6 @@ function parseTags(tagOrCsv) {
 }
 
 const hashtagIdCache = new Map(); // name -> id
-
 async function getHashtagId(tag, igId, pageToken) {
   if (hashtagIdCache.has(tag)) return hashtagIdCache.get(tag);
   const url = new URL("https://graph.facebook.com/v23.0/ig_hashtag_search");
@@ -106,58 +119,61 @@ export async function fetchHashtagUGCPage({
   limit = 24,
   cursors = {},
 } = {}) {
-  if (!PAGE_TOKEN || !IG_ID) throw new Error("缺少 PAGE_TOKEN 或 INSTAGRAM_IG_ID");
+  const cacheKey = `h:${JSON.stringify({tags, strategy, limit, cursors})}`;
+  return withCache(cacheKey, 30_000, async () => {
+    if (!PAGE_TOKEN || !IG_ID) throw new Error("缺少 PAGE_TOKEN 或 INSTAGRAM_IG_ID");
 
-  const tagArr = Array.isArray(tags) ? tags : parseTags(tags);
-  if (!tagArr.length) return { items: [], nextCursors: {} };
+    const tagArr = Array.isArray(tags) ? tags : parseTags(tags);
+    if (!tagArr.length) return { items: [], nextCursors: {} };
 
-  const edges = strategy === "both" ? ["top_media", "recent_media"]
-               : strategy === "recent" ? ["recent_media"] : ["top_media"];
+    const edges = strategy === "both" ? ["top_media", "recent_media"]
+                 : strategy === "recent" ? ["recent_media"] : ["top_media"];
 
-  const perBucket = Math.max(3, Math.ceil(limit / (tagArr.length * edges.length)));
+    const perBucket = Math.max(3, Math.ceil(limit / (tagArr.length * edges.length)));
 
-  const ids = await Promise.all(tagArr.map(t => getHashtagId(t, IG_ID, PAGE_TOKEN)));
-  const pairs = tagArr.map((t, i) => ({ tag: t, id: ids[i] })).filter(p => p.id);
+    const ids = await Promise.all(tagArr.map(t => getHashtagId(t, IG_ID, PAGE_TOKEN)));
+    const pairs = tagArr.map((t, i) => ({ tag: t, id: ids[i] })).filter(p => p.id);
 
-  const buckets = [];
-  const nextCursors = {};
+    const buckets = [];
+    const nextCursors = {};
 
-  await Promise.all(pairs.map(async ({ tag, id }) => {
-    for (const edge of edges) {
-      const after = cursors?.[tag]?.[edge === "top_media" ? "topAfter" : "recentAfter"] || "";
-      try {
-        const page = await fetchHashtagEdgePage({
-          hashtagId: id,
-          igId: IG_ID,
-          pageToken: PAGE_TOKEN,
-          edge,
-          limit: perBucket,
-          after,
-        });
-        page.items.forEach(m => { m.__hashtag = tag; m.__edge = edge; });
-        buckets.push(...page.items);
-        if (!nextCursors[tag]) nextCursors[tag] = {};
-        if (edge === "top_media") nextCursors[tag].topAfter = page.nextAfter || "";
-        else nextCursors[tag].recentAfter = page.nextAfter || "";
-      } catch {}
-    }
-  }));
-
-  const merged = buckets
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-    .slice(0, limit)
-    .map((item) => ({
-      id: item.id,
-      media_url: item.media_url,
-      caption: item.caption || "",
-      permalink: item.permalink,
-      timestamp: item.timestamp,
-      media_type: item.media_type,
-      hashtag: item.__hashtag || "",
-      username: item.username || "",
+    await Promise.all(pairs.map(async ({ tag, id }) => {
+      for (const edge of edges) {
+        const after = cursors?.[tag]?.[edge === "top_media" ? "topAfter" : "recentAfter"] || "";
+        try {
+          const page = await fetchHashtagEdgePage({
+            hashtagId: id,
+            igId: IG_ID,
+            pageToken: PAGE_TOKEN,
+            edge,
+            limit: perBucket,
+            after,
+          });
+          page.items.forEach(m => { m.__hashtag = tag; m.__edge = edge; });
+          buckets.push(...page.items);
+          if (!nextCursors[tag]) nextCursors[tag] = {};
+          if (edge === "top_media") nextCursors[tag].topAfter = page.nextAfter || "";
+          else nextCursors[tag].recentAfter = page.nextAfter || "";
+        } catch {}
+      }
     }));
 
-  return { items: merged, nextCursors };
+    const items = buckets
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, limit)
+      .map((it) => ({
+        id: it.id,
+        media_url: it.media_url,
+        caption: it.caption || "",
+        permalink: it.permalink,
+        timestamp: it.timestamp,
+        media_type: it.media_type,
+        hashtag: it.__hashtag || "",
+        username: it.username || "",
+      }));
+
+    return { items, nextCursors };
+  });
 }
 
 /* ==================== Hashtag：一次抓满写盘（保留） ==================== */
@@ -233,28 +249,31 @@ function normalizeTagItem(m) {
  * ✅ Mentions (/tags) 游标分页（单页）
  */
 export async function fetchTagUGCPage({ limit = 24, after = "", includeChildren = false } = {}) {
-  if (!USER_TOKEN || !IG_ID) throw new Error("缺少 INSTAGRAM_ACCESS_TOKEN / INSTAGRAM_IG_ID");
+  const cacheKey = `t:${JSON.stringify({limit, after, includeChildren})}`;
+  return withCache(cacheKey, 30_000, async () => {
+    if (!USER_TOKEN || !IG_ID) throw new Error("缺少 INSTAGRAM_ACCESS_TOKEN 或 INSTAGRAM_IG_ID");
 
-  const u = new URL(`https://graph.facebook.com/v23.0/${IG_ID}/tags`);
-  u.searchParams.set("fields", buildTagsFields(includeChildren));
-  u.searchParams.set("limit", String(limit));
-  if (after) u.searchParams.set("after", after);
-  u.searchParams.set("access_token", USER_TOKEN);
+    const u = new URL(`https://graph.facebook.com/v23.0/${IG_ID}/tags`);
+    u.searchParams.set("fields", buildTagsFields(includeChildren));
+    u.searchParams.set("limit", String(limit));
+    if (after) u.searchParams.set("after", after);
+    u.searchParams.set("access_token", USER_TOKEN);
 
-  const res = await fetch(u.toString());
-  const json = await res.json();
+    const res = await fetch(u.toString());
+    const json = await res.json();
 
-  if (!res.ok || json?.error) {
-    const msg = json?.error?.message || `Graph ${res.status}`;
-    const code = json?.error?.code || res.status;
-    throw Object.assign(new Error(msg), { code });
-  }
+    if (!res.ok || json?.error) {
+      const msg = json?.error?.message || `Graph ${res.status}`;
+      const code = json?.error?.code || res.status;
+      throw Object.assign(new Error(msg), { code });
+    }
 
-  const items = Array.isArray(json.data) ? json.data.map(normalizeTagItem) : [];
-  const nextAfter = json?.paging?.cursors?.after || "";
-  const nextUrl = json?.paging?.next || "";
+    const items = Array.isArray(json.data) ? json.data.map(normalizeTagItem) : [];
+    const nextAfter = json?.paging?.cursors?.after || "";
+    const nextUrl = json?.paging?.next || "";
 
-  return { items, nextAfter, nextUrl };
+    return { items, nextAfter, nextUrl };
+  });
 }
 
 /**
