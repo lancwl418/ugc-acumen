@@ -58,12 +58,9 @@ async function readJsonSafe(file, fallback = "[]") {
   }
 }
 
-/* ---------- Loader: same logic, first page + cursor-based ---------- */
+/* ---------- Loader: unchanged logic (first page + cursors) ---------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
-
-  // Active tab (hashtag | mentions)
-  const activeTab = url.searchParams.get("tab") === "mentions" ? "mentions" : "hashtag";
 
   // Hashtag pagination state
   const hSize = Math.min(40, Math.max(6, Number(url.searchParams.get("hSize") || 12)));
@@ -115,7 +112,6 @@ export async function loader({ request }) {
 
   return json(
     {
-      activeTab,
       hashtag: {
         items: hItems,
         visible: hashtagVisible,
@@ -137,7 +133,7 @@ export async function loader({ request }) {
   );
 }
 
-/* ---------- Action: same as before (save & manual refresh) ---------- */
+/* ---------- Action: unchanged (save & manual refresh) ---------- */
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
@@ -179,7 +175,7 @@ export async function action({ request }) {
   return json({ ok: true });
 }
 
-/* ---------- Page (Tabs UI, English texts) ---------- */
+/* ---------- Page (Tabs UI using hash; switching tabs won't re-run loader) ---------- */
 export default function AdminUGC() {
   const data = useLoaderData();
   const saver = useFetcher();
@@ -187,22 +183,30 @@ export default function AdminUGC() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Tabs state from URL (?tab=hashtag|mentions)
+  // Tabs controlled by URL hash to avoid loader re-run
   const tabs = [
     { id: "hashtag", content: "Hashtag (#)" },
     { id: "mentions", content: "Mentions (@)" },
   ];
-  const selectedIndex = data.activeTab === "mentions" ? 1 : 0;
 
-  const setTab = (index) => {
-    const usp = new URLSearchParams(location.search);
-    usp.set("tab", index === 1 ? "mentions" : "hashtag");
-    // keep pagination params as-is
-    navigate(`?${usp.toString()}`, { preventScrollReset: true, replace: true });
+  const initialIndex = location.hash === "#mentions" ? 1 : 0;
+  const [selectedIndex, setSelectedIndex] = useState(initialIndex);
+
+  useEffect(() => {
+    setSelectedIndex(location.hash === "#mentions" ? 1 : 0);
+  }, [location.hash]);
+
+  const onSelectTab = (index) => {
+    setSelectedIndex(index);
+    // update only hash -> no loader
+    navigate(index === 1 ? "#mentions" : "#hashtag", {
+      replace: true,
+      preventScrollReset: true,
+    });
   };
 
   return (
-    <Page title="UGC Admin (Hashtag & Mentions)">
+    <Page>
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h1" variant="headingLg">
           UGC Admin (Hashtag & Mentions)
@@ -216,15 +220,9 @@ export default function AdminUGC() {
       </InlineStack>
 
       <div style={{ marginTop: 16 }}>
-        <Tabs tabs={tabs} selected={selectedIndex} onSelect={setTab}>
-          {/* Tab 0: Hashtag */}
-          {selectedIndex === 0 && (
-            <TabHashtag data={data} saver={saver} />
-          )}
-          {/* Tab 1: Mentions */}
-          {selectedIndex === 1 && (
-            <TabMentions data={data} saver={saver} />
-          )}
+        <Tabs tabs={tabs} selected={selectedIndex} onSelect={onSelectTab}>
+          {selectedIndex === 0 && <TabHashtag data={data} saver={saver} />}
+          {selectedIndex === 1 && <TabMentions data={data} saver={saver} />}
         </Tabs>
       </div>
     </Page>
@@ -250,10 +248,9 @@ function TabHashtag({ data, saver }) {
         <Button
           onClick={() => {
             const usp = new URLSearchParams(location.search);
-            usp.set("tab", "hashtag");
             usp.set("hCursor", data.hashtag.nextCursorB64 || "");
             usp.set("hSize", String(data.hashtag.pageSize || 12));
-            navigate(`?${usp.toString()}#tab-hashtag`, {
+            navigate(`?${usp.toString()}#hashtag`, {
               preventScrollReset: true,
               replace: true,
             });
@@ -285,10 +282,9 @@ function TabMentions({ data, saver }) {
         <Button
           onClick={() => {
             const usp = new URLSearchParams(location.search);
-            usp.set("tab", "mentions");
             if (data.mentions.nextAfter) usp.set("tAfter", data.mentions.nextAfter);
             usp.set("tSize", String(data.mentions.pageSize || 12));
-            navigate(`?${usp.toString()}#tab-mentions`, {
+            navigate(`?${usp.toString()}#mentions`, {
               preventScrollReset: true,
               replace: true,
             });
