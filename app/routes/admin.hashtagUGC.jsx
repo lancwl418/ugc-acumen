@@ -5,6 +5,7 @@ import {
   useFetcher,
   useNavigate,
   useLocation,
+  useNavigation, // 👈 for loading state
 } from "@remix-run/react";
 import {
   Page,
@@ -36,7 +37,6 @@ import {
   fillMissingMediaOnce,
 } from "../lib/fetchHashtagUGC.js";
 
-/* ---------- Constants ---------- */
 const CATEGORY_OPTIONS = [
   { label: "Camping Life", value: "camping" },
   { label: "Off-Road", value: "off-road" },
@@ -49,7 +49,6 @@ const CATEGORY_OPTIONS = [
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
-/* ---------- Utils ---------- */
 async function readJsonSafe(file, fallback = "[]") {
   try {
     return JSON.parse((await fs.readFile(file, "utf-8")) || fallback);
@@ -58,7 +57,7 @@ async function readJsonSafe(file, fallback = "[]") {
   }
 }
 
-/* ---------- Loader: unchanged logic (first page + cursors) ---------- */
+/* ---------------- Loader: unchanged data logic ---------------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
 
@@ -67,9 +66,7 @@ export async function loader({ request }) {
   const hCursorB64 = url.searchParams.get("hCursor") || "";
   let hCursors = {};
   try {
-    if (hCursorB64) {
-      hCursors = JSON.parse(Buffer.from(hCursorB64, "base64").toString("utf-8"));
-    }
+    if (hCursorB64) hCursors = JSON.parse(Buffer.from(hCursorB64, "base64").toString("utf-8"));
   } catch {}
 
   // Mentions pagination state
@@ -94,19 +91,14 @@ export async function loader({ request }) {
     })),
   ]);
 
-  // Fill missing media once (only if needed)
   const hItems = await Promise.all(
     hPage.items.map((it) =>
-      it.media_url || it.thumbnail_url
-        ? it
-        : fillMissingMediaOnce(it, { source: "hashtag" })
+      it.media_url || it.thumbnail_url ? it : fillMissingMediaOnce(it, { source: "hashtag" })
     )
   );
   const tItems = await Promise.all(
     tPage.items.map((it) =>
-      it.media_url || it.thumbnail_url
-        ? it
-        : fillMissingMediaOnce(it, { source: "tag" })
+      it.media_url || it.thumbnail_url ? it : fillMissingMediaOnce(it, { source: "tag" })
     )
   );
 
@@ -115,10 +107,9 @@ export async function loader({ request }) {
       hashtag: {
         items: hItems,
         visible: hashtagVisible,
-        nextCursorB64: Buffer.from(
-          JSON.stringify(hPage.nextCursors || {}),
-          "utf-8"
-        ).toString("base64"),
+        nextCursorB64: Buffer.from(JSON.stringify(hPage.nextCursors || {}), "utf-8").toString(
+          "base64"
+        ),
         pageSize: hSize,
       },
       mentions: {
@@ -133,16 +124,13 @@ export async function loader({ request }) {
   );
 }
 
-/* ---------- Action: unchanged (save & manual refresh) ---------- */
+/* ---------------- Action: unchanged (save & manual refresh) ---------------- */
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
   if (op === "refresh") {
     try {
-      await Promise.all([
-        fetchHashtagUGCPage({ limit: 6 }),
-        fetchTagUGCPage({ limit: 6 }),
-      ]);
+      await Promise.all([fetchHashtagUGCPage({ limit: 6 }), fetchTagUGCPage({ limit: 6 })]);
     } catch {}
     return json({ ok: true });
   }
@@ -175,15 +163,15 @@ export async function action({ request }) {
   return json({ ok: true });
 }
 
-/* ---------- Page (Tabs UI using hash; switching tabs won't re-run loader) ---------- */
+/* ---------------- Page (tabs with hash; prev/next + loading) ---------------- */
 export default function AdminUGC() {
   const data = useLoaderData();
   const saver = useFetcher();
   const refresher = useFetcher();
   const navigate = useNavigate();
   const location = useLocation();
+  const navigation = useNavigation(); // global route loading state
 
-  // Tabs controlled by URL hash to avoid loader re-run
   const tabs = [
     { id: "hashtag", content: "Hashtag (#)" },
     { id: "mentions", content: "Mentions (@)" },
@@ -198,15 +186,16 @@ export default function AdminUGC() {
 
   const onSelectTab = (index) => {
     setSelectedIndex(index);
-    // update only hash -> no loader
     navigate(index === 1 ? "#mentions" : "#hashtag", {
       replace: true,
       preventScrollReset: true,
     });
   };
 
+  const isLoading = navigation.state !== "idle";
+
   return (
-    <Page>
+    <Page title="UGC Admin (Hashtag & Mentions)">
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h1" variant="headingLg">
           UGC Admin (Hashtag & Mentions)
@@ -221,18 +210,67 @@ export default function AdminUGC() {
 
       <div style={{ marginTop: 16 }}>
         <Tabs tabs={tabs} selected={selectedIndex} onSelect={onSelectTab}>
-          {selectedIndex === 0 && <TabHashtag data={data} saver={saver} />}
-          {selectedIndex === 1 && <TabMentions data={data} saver={saver} />}
+          {selectedIndex === 0 && (
+            <TabHashtag data={data} saver={saver} routeLoading={isLoading} />
+          )}
+          {selectedIndex === 1 && (
+            <TabMentions data={data} saver={saver} routeLoading={isLoading} />
+          )}
         </Tabs>
       </div>
     </Page>
   );
 }
 
-/* ---------- Tab: Hashtag ---------- */
-function TabHashtag({ data, saver }) {
+/* ---------- Helpers for cursor stacks in query ---------- */
+function readStack(paramValue) {
+  if (!paramValue) return [];
+  try {
+    return JSON.parse(Buffer.from(paramValue, "base64").toString("utf-8")) || [];
+  } catch {
+    return [];
+  }
+}
+function writeStack(arr) {
+  try {
+    return Buffer.from(JSON.stringify(arr), "utf-8").toString("base64");
+  } catch {
+    return "";
+  }
+}
+
+/* ---------------- Tab: Hashtag ---------------- */
+function TabHashtag({ data, saver, routeLoading }) {
   const navigate = useNavigate();
   const location = useLocation();
+
+  // Prev availability: presence of hStack
+  const uspRead = new URLSearchParams(location.search);
+  const hStackArr = readStack(uspRead.get("hStack") || "");
+  const canPrev = hStackArr.length > 0;
+
+  const goNext = () => {
+    const usp = new URLSearchParams(location.search);
+    // push current cursor into stack (could be empty string)
+    const stack = readStack(usp.get("hStack") || "");
+    stack.push(usp.get("hCursor") || "");
+    usp.set("hStack", writeStack(stack));
+
+    // set next cursor and size
+    usp.set("hCursor", data.hashtag.nextCursorB64 || "");
+    usp.set("hSize", String(data.hashtag.pageSize || 12));
+    navigate(`?${usp.toString()}#hashtag`, { preventScrollReset: true, replace: true });
+  };
+
+  const goPrev = () => {
+    const usp = new URLSearchParams(location.search);
+    const stack = readStack(usp.get("hStack") || "");
+    const prevCursor = stack.pop() || ""; // may be empty for first page
+    usp.set("hStack", writeStack(stack));
+    usp.set("hCursor", prevCursor);
+    usp.set("hSize", String(data.hashtag.pageSize || 12));
+    navigate(`?${usp.toString()}#hashtag`, { preventScrollReset: true, replace: true });
+  };
 
   return (
     <BlockStack gap="400" id="tab-hashtag">
@@ -244,18 +282,12 @@ function TabHashtag({ data, saver }) {
         products={data.products}
         saver={saver}
       />
-      <InlineStack align="end">
-        <Button
-          onClick={() => {
-            const usp = new URLSearchParams(location.search);
-            usp.set("hCursor", data.hashtag.nextCursorB64 || "");
-            usp.set("hSize", String(data.hashtag.pageSize || 12));
-            navigate(`?${usp.toString()}#hashtag`, {
-              preventScrollReset: true,
-              replace: true,
-            });
-          }}
-        >
+
+      <InlineStack align="end" gap="200">
+        <Button onClick={goPrev} disabled={!canPrev || routeLoading} loading={routeLoading}>
+          Prev page
+        </Button>
+        <Button onClick={goNext} primary disabled={routeLoading} loading={routeLoading}>
           Next page
         </Button>
       </InlineStack>
@@ -263,10 +295,36 @@ function TabHashtag({ data, saver }) {
   );
 }
 
-/* ---------- Tab: Mentions ---------- */
-function TabMentions({ data, saver }) {
+/* ---------------- Tab: Mentions ---------------- */
+function TabMentions({ data, saver, routeLoading }) {
   const navigate = useNavigate();
   const location = useLocation();
+
+  const uspRead = new URLSearchParams(location.search);
+  const tStackArr = readStack(uspRead.get("tStack") || "");
+  const canPrev = tStackArr.length > 0;
+
+  const goNext = () => {
+    const usp = new URLSearchParams(location.search);
+    const stack = readStack(usp.get("tStack") || "");
+    stack.push(usp.get("tAfter") || "");
+    usp.set("tStack", writeStack(stack));
+
+    if (data.mentions.nextAfter) usp.set("tAfter", data.mentions.nextAfter);
+    usp.set("tSize", String(data.mentions.pageSize || 12));
+    navigate(`?${usp.toString()}#mentions`, { preventScrollReset: true, replace: true });
+  };
+
+  const goPrev = () => {
+    const usp = new URLSearchParams(location.search);
+    const stack = readStack(usp.get("tStack") || "");
+    const prevAfter = stack.pop() || "";
+    usp.set("tStack", writeStack(stack));
+    if (prevAfter) usp.set("tAfter", prevAfter);
+    else usp.delete("tAfter"); // back to first page
+    usp.set("tSize", String(data.mentions.pageSize || 12));
+    navigate(`?${usp.toString()}#mentions`, { preventScrollReset: true, replace: true });
+  };
 
   return (
     <BlockStack gap="400" id="tab-mentions">
@@ -278,18 +336,12 @@ function TabMentions({ data, saver }) {
         products={data.products}
         saver={saver}
       />
-      <InlineStack align="end">
-        <Button
-          onClick={() => {
-            const usp = new URLSearchParams(location.search);
-            if (data.mentions.nextAfter) usp.set("tAfter", data.mentions.nextAfter);
-            usp.set("tSize", String(data.mentions.pageSize || 12));
-            navigate(`?${usp.toString()}#mentions`, {
-              preventScrollReset: true,
-              replace: true,
-            });
-          }}
-        >
+
+      <InlineStack align="end" gap="200">
+        <Button onClick={goPrev} disabled={!canPrev || routeLoading} loading={routeLoading}>
+          Prev page
+        </Button>
+        <Button onClick={goNext} primary disabled={routeLoading} loading={routeLoading}>
           Next page
         </Button>
       </InlineStack>
@@ -297,7 +349,7 @@ function TabMentions({ data, saver }) {
   );
 }
 
-/* ---------- Shared Section (English labels) ---------- */
+/* ---------------- Shared Section ---------------- */
 function Section({ title, source, pool, visible, products, saver }) {
   const initialSelected = useMemo(() => {
     const m = new Map();
@@ -466,7 +518,6 @@ function Section({ title, source, pool, visible, products, saver }) {
   );
 }
 
-/* ---------- Helpers ---------- */
 function seedToVisible(seed) {
   return {
     category: "camping",
