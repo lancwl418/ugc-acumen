@@ -85,7 +85,7 @@ export default function AdminUGC() {
   };
 
   return (
-    <Page title="📸 UGC 内容管理">
+    <Page title="Self Account Content Management">
       <fetcher.Form method="post">
         <div
           style={{
