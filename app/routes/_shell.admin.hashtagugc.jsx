@@ -1,11 +1,12 @@
-// app/routes/admin.hashtagugc.jsx
-import { json } from "@remix-run/node";
+// app/routes/_shell.admin.hashtagugc.jsx
+import { defer, json } from "@remix-run/node";
 import {
   useLoaderData,
   useFetcher,
   useNavigate,
   useLocation,
   useNavigation,
+  Await,
 } from "@remix-run/react";
 import {
   Page,
@@ -17,8 +18,9 @@ import {
   Tag,
   InlineStack,
   BlockStack,
+  SkeletonBodyText,
 } from "@shopify/polaris";
-import { useMemo, useState, useEffect } from "react";
+import { Suspense, useMemo, useState, useEffect } from "react";
 import fs from "fs/promises";
 import path from "path";
 
@@ -26,11 +28,11 @@ import {
   VISIBLE_HASHTAG_PATH,
   ensureVisibleHashtagFile,
 } from "../lib/persistPaths.js";
-
 import {
   fetchHashtagUGCPage,
   fillMissingMediaOnce,
 } from "../lib/fetchHashtagUGC.js";
+import { memo } from "../lib/memo.js";
 
 /* ---------- Constants ---------- */
 const CATEGORY_OPTIONS = [
@@ -66,7 +68,7 @@ function writeStackSS(key, arr) {
   } catch {}
 }
 
-/* ---------- Loader: only hashtag flow ---------- */
+/* ---------- Loader: use defer so route switches immediately ---------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
 
@@ -85,42 +87,43 @@ export async function loader({ request }) {
     readJsonSafe(path.resolve("public/products.json"), "[]"),
   ]);
 
-  const hPage = await fetchHashtagUGCPage({ limit: hSize, cursors: hCursors }).catch(() => ({
-    items: [],
-    nextCursors: {},
-  }));
+  // 重：IG 拉取用 promise 包装，推给 defer 流式传给前端
+  const hashtagPromise = (async () => {
+    const hPage = await memo(
+      `h:${hSize}:${Buffer.from(JSON.stringify(hCursors), "utf-8").toString("base64")}`,
+      30_000,
+      () => fetchHashtagUGCPage({ limit: hSize, cursors: hCursors })
+    ).catch(() => ({ items: [], nextCursors: {} }));
 
-  const hItems = await Promise.all(
-    (hPage.items || []).map((it) =>
-      it.media_url || it.thumbnail_url ? it : fillMissingMediaOnce(it, { source: "hashtag" })
-    )
-  );
+    const items = await Promise.all(
+      (hPage.items || []).map((it) =>
+        it.media_url || it.thumbnail_url ? it : fillMissingMediaOnce(it, { source: "hashtag" })
+      )
+    );
 
-  return json(
+    return {
+      items,
+      nextCursorB64: Buffer.from(JSON.stringify(hPage.nextCursors || {}), "utf-8").toString("base64"),
+      pageSize: hSize,
+    };
+  })();
+
+  return defer(
     {
-      hashtag: {
-        items: hItems,
-        visible: hashtagVisible,
-        nextCursorB64: Buffer.from(
-          JSON.stringify(hPage.nextCursors || {}),
-          "utf-8"
-        ).toString("base64"),
-        pageSize: hSize,
-      },
+      hashtag: hashtagPromise,   // Promise：大数据晚点到
+      visible: hashtagVisible,   // 这些小数据先到，页面能先渲染
       products,
     },
     { headers: { "Cache-Control": "private, max-age=30" } }
   );
 }
 
-/* ---------- Action: only write VISIBLE_HASHTAG_PATH ---------- */
+/* ---------- Action: unchanged ---------- */
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
   if (op === "refresh") {
-    try {
-      await fetchHashtagUGCPage({ limit: 6 });
-    } catch {}
+    try { await fetchHashtagUGCPage({ limit: 6 }); } catch {}
     return json({ ok: true });
   }
 
@@ -143,90 +146,61 @@ export async function action({ request }) {
   const list = Array.from(map.values());
   await ensureVisibleHashtagFile();
   await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(list, null, 2), "utf-8");
-
   return json({ ok: true });
 }
 
-/* ---------- Page: Hashtag admin (standalone) ---------- */
+/* ---------- Page ---------- */
 export default function AdminHashtagUGC() {
-  const data = useLoaderData();
+  const data = useLoaderData(); // { hashtag: Promise, visible, products }
   const saver = useFetcher();
   const refresher = useFetcher();
-  const navigate = useNavigate();
-  const location = useLocation();
   const navigation = useNavigation();
-
-  const usp = new URLSearchParams(location.search);
-  const hCursorParam = usp.get("hCursor") || "";
-  const hSizeParam = usp.get("hSize") || "";
-
-  const [hashtagView, setHashtagView] = useState({
-    items: data.hashtag.items,
-    nextCursorB64: data.hashtag.nextCursorB64,
-    pageSize: data.hashtag.pageSize,
-    visible: data.hashtag.visible,
-  });
-
-  useEffect(() => {
-    setHashtagView({
-      items: data.hashtag.items,
-      nextCursorB64: data.hashtag.nextCursorB64,
-      pageSize: data.hashtag.pageSize,
-      visible: data.hashtag.visible,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hCursorParam, hSizeParam, data.hashtag.items, data.hashtag.nextCursorB64, data.hashtag.pageSize]);
-
-  const routeLoading = navigation.state !== "idle";
 
   return (
     <Page>
       <InlineStack align="space-between" blockAlign="center">
-        <Text as="h1" variant="headingLg">
-          UGC Admin — Hashtags (#)
-        </Text>
+        <Text as="h1" variant="headingLg">UGC Admin — Hashtags (#)</Text>
         <refresher.Form method="post">
           <input type="hidden" name="op" value="refresh" />
-          <Button submit loading={refresher.state !== "idle"}>
-            Refresh Hashtag Pool
-          </Button>
+          <Button submit loading={refresher.state !== "idle"}>Refresh Hashtag Pool</Button>
         </refresher.Form>
       </InlineStack>
 
-      {/* 占满页面高度，确保页脚按钮贴底 */}
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          minHeight: "calc(100vh - 120px)",
-          marginTop: 16,
-        }}
-      >
+      <div style={{ display: "flex", flexDirection: "column", minHeight: "calc(100vh - 120px)", marginTop: 16 }}>
         <div style={{ flex: "1 1 auto" }}>
-          <BlockStack gap="400" id="tab-hashtag">
-            <Section
-              title="Hashtag (#)"
-              source="hashtag"
-              pool={hashtagView.items}
-              visible={hashtagView.visible}
-              products={data.products}
-              saver={saver}
-            />
-          </BlockStack>
-        </div>
+          {/* 这里立刻渲染骨架，等数据好了再填充内容 */}
+          <Suspense fallback={<GridSkeleton />}>
+            <Await resolve={data.hashtag}>
+              {(h) => (
+                <>
+                  <BlockStack gap="400" id="tab-hashtag">
+                    <Section
+                      title="Hashtag (#)"
+                      source="hashtag"
+                      pool={h.items}
+                      visible={data.visible}
+                      products={data.products}
+                      saver={saver}
+                    />
+                  </BlockStack>
 
-        <Pager
-          view={hashtagView}
-          routeLoading={routeLoading}
-          hash="#hashtag"
-          stackKey="ugc:hStack"
-        />
+                  <Pager
+                    view={h}
+                    routeLoading={navigation.state !== "idle"}
+                    hash="#hashtag"
+                    stackKey="ugc:hStack"
+                  />
+                </>
+              )}
+            </Await>
+          </Suspense>
+        </div>
       </div>
     </Page>
   );
 }
 
-/* ---------- Pager: bottom-centered footer ---------- */
+/* ---------- Pager（保持不变） ---------- */
 function Pager({ view, routeLoading, hash, stackKey }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -239,14 +213,11 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     if (routeLoading || busy) return;
     setBusy(true);
     const usp = new URLSearchParams(location.search);
-
     const stack = readStackSS(stackKey);
     stack.push(usp.get("hCursor") || "");
     writeStackSS(stackKey, stack);
-
     usp.set("hCursor", view.nextCursorB64 || "");
     usp.set("hSize", String(view.pageSize || 12));
-
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
 
@@ -254,16 +225,13 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     if (routeLoading || busy) return;
     const stack = readStackSS(stackKey);
     if (stack.length === 0) return;
-
     setBusy(true);
     const prevCursor = stack.pop() || "";
     writeStackSS(stackKey, stack);
-
     const usp = new URLSearchParams(location.search);
     if (prevCursor) usp.set("hCursor", prevCursor);
     else usp.delete("hCursor");
     usp.set("hSize", String(view.pageSize || 12));
-
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
 
@@ -272,27 +240,12 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   }, [navigation.state]);
 
   return (
-    <div
-      style={{
-        borderTop: "1px solid var(--p-color-border, #e1e3e5)",
-        padding: "12px 0",
-        marginTop: 16,
-      }}
-    >
+    <div style={{ borderTop: "1px solid var(--p-color-border, #e1e3e5)", padding: "12px 0", marginTop: 16 }}>
       <InlineStack align="center" gap="200">
-        <Button
-          onClick={goPrev}
-          disabled={!canPrev || routeLoading || busy}
-          loading={routeLoading || busy}
-        >
+        <Button onClick={goPrev} disabled={!canPrev || routeLoading || busy} loading={routeLoading || busy}>
           Prev page
         </Button>
-        <Button
-          primary
-          onClick={goNext}
-          disabled={routeLoading || busy}
-          loading={routeLoading || busy}
-        >
+        <Button primary onClick={goNext} disabled={routeLoading || busy} loading={routeLoading || busy}>
           Next page
         </Button>
       </InlineStack>
@@ -300,7 +253,7 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   );
 }
 
-/* ---------- Shared Section (source 固定为 hashtag) ---------- */
+/* ---------- Shared Section（原逻辑不动） ---------- */
 function Section({ title, source, pool, visible, products, saver }) {
   const initialSelected = useMemo(() => {
     const m = new Map();
@@ -335,12 +288,8 @@ function Section({ title, source, pool, visible, products, saver }) {
     <saver.Form method="post">
       <input type="hidden" name="source" value={source} />
       <InlineStack align="space-between" blockAlign="center">
-        <Text as="h2" variant="headingLg">
-          {title}
-        </Text>
-        <Button submit primary>
-          Save visible list (hashtags)
-        </Button>
+        <Text as="h2" variant="headingLg">{title}</Text>
+        <Button submit primary>Save visible list (hashtags)</Button>
       </InlineStack>
 
       <div
@@ -367,27 +316,13 @@ function Section({ title, source, pool, visible, products, saver }) {
                   <Text as="span" variant="bodySm" tone="subdued">
                     {item.timestamp ? new Date(item.timestamp).toLocaleString() : ""}
                   </Text>
-                  {item.username && (
-                    <Text as="span" variant="bodySm" tone="subdued">
-                      @{item.username}
-                    </Text>
-                  )}
+                  {item.username && <Text as="span" variant="bodySm" tone="subdued">@{item.username}</Text>}
                 </InlineStack>
 
                 <a href={item.permalink} target="_blank" rel="noreferrer">
                   {isVideo ? (
-                    <video
-                      controls
-                      muted
-                      preload="metadata"
-                      playsInline
-                      style={{
-                        width: "100%",
-                        height: 200,
-                        objectFit: "cover",
-                        borderRadius: 8,
-                      }}
-                    >
+                    <video controls muted preload="metadata" playsInline
+                      style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}>
                       <source src={item.media_url || ""} type="video/mp4" />
                     </video>
                   ) : (
@@ -397,15 +332,8 @@ function Section({ title, source, pool, visible, products, saver }) {
                       loading="lazy"
                       decoding="async"
                       referrerPolicy="no-referrer"
-                      style={{
-                        width: "100%",
-                        height: 200,
-                        objectFit: "cover",
-                        borderRadius: 8,
-                      }}
-                      onError={(e) => {
-                        e.currentTarget.src = TINY;
-                      }}
+                      style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
+                      onError={(e) => { e.currentTarget.src = TINY; }}
                     />
                   )}
                 </a>
@@ -415,11 +343,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                   {item.caption && item.caption.length > 160 ? "…" : ""}
                 </Text>
 
-                <Checkbox
-                  label="Show on site"
-                  checked={isChecked}
-                  onChange={() => toggle(item.id, item)}
-                />
+                <Checkbox label="Show on site" checked={isChecked} onChange={() => toggle(item.id, item)} />
 
                 {isChecked && (
                   <>
@@ -431,10 +355,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                     />
                     <Select
                       label="Linked Product"
-                      options={products.map((p) => ({
-                        label: p.title,
-                        value: p.handle,
-                      }))}
+                      options={products.map((p) => ({ label: p.title, value: p.handle }))}
                       value={chosenProducts[0] || ""}
                       onChange={(v) => changeProducts(item.id, v)}
                     />
@@ -462,6 +383,29 @@ function Section({ title, source, pool, visible, products, saver }) {
         })}
       </div>
     </saver.Form>
+  );
+}
+
+/* ---------- Skeleton Grid ---------- */
+function GridSkeleton() {
+  return (
+    <div
+      style={{
+        marginTop: 16,
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
+        gap: 24,
+      }}
+    >
+      {Array.from({ length: 12 }).map((_, i) => (
+        <Card key={i} padding="400">
+          <div style={{ width: "100%", height: 200, background: "var(--p-color-bg-surface-tertiary, #F1F2F4)", borderRadius: 8 }} />
+          <div style={{ marginTop: 12 }}>
+            <SkeletonBodyText lines={2} />
+          </div>
+        </Card>
+      ))}
+    </div>
   );
 }
 
