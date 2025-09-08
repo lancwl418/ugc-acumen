@@ -1,33 +1,35 @@
-// app/routes/app.jsx
+// app/routes/_shell.jsx
 import { json } from "@remix-run/node";
-import { Outlet, useLocation, useLoaderData } from "@remix-run/react";
+import { Outlet, useLocation, useLoaderData, useNavigate } from "@remix-run/react";
 import { AppProvider as ShopifyAppProvider } from "@shopify/shopify-app-remix/react";
 import { Frame, Navigation } from "@shopify/polaris";
 import { useMemo } from "react";
 
 export const loader = async () => {
-  // 如果你在别处注入 apiKey，这里按你的逻辑返回即可
   return json({ apiKey: process.env.SHOPIFY_API_KEY || "" });
 };
 
-export default function App() {
-  const { apiKey } = useLoaderData<typeof loader>();
+export default function ShellLayout() {
+  const { apiKey } = useLoaderData();
   const location = useLocation();
+  const navigate = useNavigate();
 
-  // 左侧导航条目（/app 布局内）
+  // 左侧导航
   const items = useMemo(
     () => [
       { label: "Home", url: "/app", match: /^\/app\/?$/ },
-      { label: "UGC — Hashtags (#)", url: "/app/admin/hashtagugc", match: /^\/app\/admin\/hashtagugc/ },
-      { label: "UGC — Mentions (@)", url: "/app/admin/mentionsugc", match: /^\/app\/admin\/mentionsugc/ },
+      { label: "UGC — Hashtags (#)", url: "/admin/hashtagugc", match: /^\/admin\/hashtagugc/ },
+      { label: "UGC — Mentions (@)", url: "/admin/mentionsugc", match: /^\/admin\/mentionsugc/ },
     ],
     []
   );
 
+  // Polaris Navigation 支持 onClick；我们用 client 跳转更顺滑
   const navItems = items.map((it) => ({
     label: it.label,
     url: it.url,
     selected: it.match.test(location.pathname),
+    onClick: () => navigate(it.url),
   }));
 
   return (
@@ -39,7 +41,7 @@ export default function App() {
           </Navigation>
         }
       >
-        {/* 悬停预取，提升点击后的首屏响应 */}
+        {/* 悬停预取，提升点击响应 */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
