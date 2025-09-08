@@ -283,7 +283,7 @@ export default function AdminUGC() {
   const routeLoading = navigation.state !== "idle";
 
   return (
-    <Page title="UGC Admin (Hashtag & Mentions)">
+    <Page>
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h1" variant="headingLg">
           UGC Admin (Hashtag & Mentions)
