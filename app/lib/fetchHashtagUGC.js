@@ -4,7 +4,7 @@ import fetch from "node-fetch";
 /** 环境变量 */
 const IG_ID      = process.env.INSTAGRAM_IG_ID || "";
 const PAGE_TOKEN = process.env.PAGE_TOKEN || "";                 // hashtag edges
-const USER_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN || "";     // /tags & mentioned_media
+const USER_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN || "";     // /tags & mentioned_media & media detail
 const APP_ID     = process.env.META_APP_ID || "";
 const APP_SECRET = process.env.META_APP_SECRET || "";
 const OEMBED     = (APP_ID && APP_SECRET) ? `${APP_ID}|${APP_SECRET}` : "";
@@ -147,4 +147,79 @@ export async function fillMissingMediaOnce(entry, { source="hashtag" } = {}) {
       return entry;
     }
   } catch { return entry; }
+}
+
+/* ==================================================================== */
+/* ========== 新增：按 Instagram 链接抓取单条媒体（用于导入） ========== */
+/* ==================================================================== */
+
+/**
+ * 输入任意 Instagram 帖子/短片链接（/p/... 或 /reel/...），
+ * 返回与你 hashtag/mentions 一致的结构：
+ * { id, username, timestamp, media_type, media_url, thumbnail_url, caption, permalink, hashtag }
+ *
+ * 依赖的环境变量：
+ *  - OEMBED（APP_ID|APP_SECRET）用于 oEmbed 解析出 media_id
+ *  - USER_TOKEN（INSTAGRAM_ACCESS_TOKEN）用于 /{media-id}?fields=...
+ */
+export async function fetchInstagramByPermalink(permalink) {
+  const url = String(permalink || "").trim();
+  if (!url) throw new Error("Empty permalink");
+  if (!OEMBED) throw new Error("Missing OEMBED token (META_APP_ID|META_APP_SECRET)");
+  if (!USER_TOKEN && !PAGE_TOKEN) throw new Error("Missing IG access token (INSTAGRAM_ACCESS_TOKEN or PAGE_TOKEN)");
+
+  return withCache(`p:${url}`, 30_000, async () => {
+    // 1) oEmbed → media_id
+    const oe = new URL("https://graph.facebook.com/v23.0/instagram_oembed");
+    oe.searchParams.set("url", url);
+    oe.searchParams.set("access_token", OEMBED);
+    oe.searchParams.set("omitscript", "true");
+    oe.searchParams.set("hidecaption", "true");
+    const oeRes = await withLimit(()=>fetch(oe));
+    const oeJson = await oeRes.json();
+    if (!oeRes.ok || oeJson?.error) {
+      throw new Error(oeJson?.error?.message || `oEmbed failed ${oeRes.status}`);
+    }
+    const mediaId = oeJson.media_id;
+    const permalinkCanonical = oeJson?.author_url ? url : url; // 保留传入链接
+
+    if (!mediaId) throw new Error("No media_id from oEmbed");
+
+    // 2) Graph → 媒体详情
+    const token = USER_TOKEN || PAGE_TOKEN;
+    const fields =
+      "id,media_type,media_url,thumbnail_url,caption,username,timestamp,permalink,children{media_type,media_url,thumbnail_url}";
+    const mUrl = new URL(`https://graph.facebook.com/v23.0/${encodeURIComponent(mediaId)}`);
+    mUrl.searchParams.set("fields", fields);
+    mUrl.searchParams.set("access_token", token);
+    const mRes = await withLimit(()=>fetch(mUrl));
+    const m = await mRes.json();
+    if (!mRes.ok || m?.error) {
+      throw new Error(m?.error?.message || `Graph media ${mRes.status}`);
+    }
+
+    // 3) 归一化
+    let mediaType = m.media_type;
+    let mediaUrl  = m.media_url || "";
+    let thumb     = m.thumbnail_url || "";
+
+    if (m.media_type === "CAROUSEL_ALBUM" && m.children?.data?.length) {
+      const first = m.children.data[0];
+      mediaType = first.media_type || mediaType;
+      mediaUrl  = first.media_url || mediaUrl;
+      thumb     = first.thumbnail_url || thumb || mediaUrl;
+    }
+
+    return {
+      id: String(m.id),
+      username: m.username || "",
+      timestamp: m.timestamp || "",
+      media_type: mediaType === "VIDEO" ? "VIDEO" : "IMAGE",
+      media_url: mediaUrl || thumb || "",
+      thumbnail_url: thumb || null,
+      caption: m.caption || "",
+      permalink: m.permalink || permalinkCanonical,
+      hashtag: "", // 可留空；import 入口不强制归属 hashtag
+    };
+  });
 }

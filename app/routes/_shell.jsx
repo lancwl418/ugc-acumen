@@ -29,6 +29,7 @@ export default function ShellLayout() {
       { label: "Home", url: "/app", match: /^\/app\/?$/ },
       { label: "UGC — Hashtags (#)", url: "/admin/hashtagugc", match: /^\/admin\/hashtagugc/ },
       { label: "UGC — Mentions (@)", url: "/admin/mentionsugc", match: /^\/admin\/mentionsugc/ },
+      { label: "UGC — Import by Link", url: "/admin/linkimport", match: /^\/admin\/linkimport/ },
     ],
     []
   );
