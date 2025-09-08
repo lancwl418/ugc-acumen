@@ -1,11 +1,12 @@
-// app/routes/admin.mentionsugc.jsx
-import { json } from "@remix-run/node";
+// app/routes/_shell.admin.mentionsugc.jsx
+import { defer, json } from "@remix-run/node";
 import {
   useLoaderData,
   useFetcher,
   useNavigate,
   useLocation,
   useNavigation,
+  Await,
 } from "@remix-run/react";
 import {
   Page,
@@ -17,8 +18,9 @@ import {
   Tag,
   InlineStack,
   BlockStack,
+  SkeletonBodyText,
 } from "@shopify/polaris";
-import { useMemo, useState, useEffect } from "react";
+import { Suspense, useMemo, useState, useEffect } from "react";
 import fs from "fs/promises";
 import path from "path";
 
@@ -26,11 +28,11 @@ import {
   VISIBLE_TAG_PATH,
   ensureVisibleTagFile,
 } from "../lib/persistPaths.js";
-
 import {
   fetchTagUGCPage,
   fillMissingMediaOnce,
 } from "../lib/fetchHashtagUGC.js";
+import { memo } from "../lib/memo.js";
 
 /* ---------- Constants ---------- */
 const CATEGORY_OPTIONS = [
@@ -66,11 +68,10 @@ function writeStackSS(key, arr) {
   } catch {}
 }
 
-/* ---------- Loader (only mentions flow) ---------- */
+/* ---------- Loader with defer ---------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
 
-  // Mentions pagination state
   const tSize = Math.min(40, Math.max(6, Number(url.searchParams.get("tSize") || 12)));
   const tAfter = url.searchParams.get("tAfter") || "";
 
@@ -80,40 +81,42 @@ export async function loader({ request }) {
     readJsonSafe(path.resolve("public/products.json"), "[]"),
   ]);
 
-  const tPage = await fetchTagUGCPage({ limit: tSize, after: tAfter }).catch(() => ({
-    items: [],
-    nextAfter: "",
-  }));
+  const mentionsPromise = (async () => {
+    const tPage = await memo(
+      `t:${tSize}:${tAfter || "-"}`,
+      30_000,
+      () => fetchTagUGCPage({ limit: tSize, after: tAfter })
+    ).catch(() => ({ items: [], nextAfter: "" }));
 
-  // Ensure media fields exist
-  const tItems = await Promise.all(
-    (tPage.items || []).map((it) =>
-      it.media_url || it.thumbnail_url ? it : fillMissingMediaOnce(it, { source: "tag" })
-    )
-  );
+    const items = await Promise.all(
+      (tPage.items || []).map((it) =>
+        it.media_url || it.thumbnail_url ? it : fillMissingMediaOnce(it, { source: "tag" })
+      )
+    );
 
-  return json(
+    return {
+      items,
+      nextAfter: tPage.nextAfter || "",
+      pageSize: tSize,
+    };
+  })();
+
+  return defer(
     {
-      mentions: {
-        items: tItems,
-        visible: tagVisible,
-        nextAfter: tPage.nextAfter || "",
-        pageSize: tSize,
-      },
+      mentions: mentionsPromise, // Promise
+      visible: tagVisible,       // small data first
       products,
     },
     { headers: { "Cache-Control": "private, max-age=30" } }
   );
 }
 
-/* ---------- Action（only write VISIBLE_TAG_PATH） ---------- */
+/* ---------- Action ---------- */
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
   if (op === "refresh") {
-    try {
-      await fetchTagUGCPage({ limit: 6 });
-    } catch {}
+    try { await fetchTagUGCPage({ limit: 6 }); } catch {}
     return json({ ok: true });
   }
 
@@ -136,90 +139,60 @@ export async function action({ request }) {
   const list = Array.from(map.values());
   await ensureVisibleTagFile();
   await fs.writeFile(VISIBLE_TAG_PATH, JSON.stringify(list, null, 2), "utf-8");
-
   return json({ ok: true });
 }
 
-/* ---------- Page（独立 Mentions 管理页） ---------- */
+/* ---------- Page ---------- */
 export default function AdminMentionsUGC() {
-  const data = useLoaderData();
+  const data = useLoaderData(); // { mentions: Promise, visible, products }
   const saver = useFetcher();
   const refresher = useFetcher();
-  const navigate = useNavigate();
-  const location = useLocation();
   const navigation = useNavigation();
-
-  const usp = new URLSearchParams(location.search);
-  const tAfterParam = usp.get("tAfter") || "";
-  const tSizeParam = usp.get("tSize") || "";
-
-  const [mentionsView, setMentionsView] = useState({
-    items: data.mentions.items,
-    nextAfter: data.mentions.nextAfter,
-    pageSize: data.mentions.pageSize,
-    visible: data.mentions.visible,
-  });
-
-  useEffect(() => {
-    setMentionsView({
-      items: data.mentions.items,
-      nextAfter: data.mentions.nextAfter,
-      pageSize: data.mentions.pageSize,
-      visible: data.mentions.visible,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tAfterParam, tSizeParam, data.mentions.items, data.mentions.nextAfter, data.mentions.pageSize]);
-
-  const routeLoading = navigation.state !== "idle";
 
   return (
     <Page>
       <InlineStack align="space-between" blockAlign="center">
-        <Text as="h1" variant="headingLg">
-          UGC Admin — Mentions (@)
-        </Text>
+        <Text as="h1" variant="headingLg">UGC Admin — Mentions (@)</Text>
         <refresher.Form method="post">
           <input type="hidden" name="op" value="refresh" />
-          <Button submit loading={refresher.state !== "idle"}>
-            Refresh Mentions Pool
-          </Button>
+          <Button submit loading={refresher.state !== "idle"}>Refresh Mentions Pool</Button>
         </refresher.Form>
       </InlineStack>
 
-      {/* 占满页面高度，确保页脚按钮贴底 */}
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          minHeight: "calc(100vh - 120px)",
-          marginTop: 16,
-        }}
-      >
+      <div style={{ display: "flex", flexDirection: "column", minHeight: "calc(100vh - 120px)", marginTop: 16 }}>
         <div style={{ flex: "1 1 auto" }}>
-          <BlockStack gap="400" id="tab-mentions">
-            <Section
-              title="📣 Mentions (@)"
-              source="tag"
-              pool={mentionsView.items}
-              visible={mentionsView.visible}
-              products={data.products}
-              saver={saver}
-            />
-          </BlockStack>
-        </div>
+          <Suspense fallback={<GridSkeleton />}>
+            <Await resolve={data.mentions}>
+              {(m) => (
+                <>
+                  <BlockStack gap="400" id="tab-mentions">
+                    <Section
+                      title="📣 Mentions (@)"
+                      source="tag"
+                      pool={m.items}
+                      visible={data.visible}
+                      products={data.products}
+                      saver={saver}
+                    />
+                  </BlockStack>
 
-        <Pager
-          view={mentionsView}
-          routeLoading={routeLoading}
-          hash="#mentions"
-          stackKey="ugc:tStack"
-        />
+                  <Pager
+                    view={m}
+                    routeLoading={navigation.state !== "idle"}
+                    hash="#mentions"
+                    stackKey="ugc:tStack"
+                  />
+                </>
+              )}
+            </Await>
+          </Suspense>
+        </div>
       </div>
     </Page>
   );
 }
 
-/* ---------- Pager：底部居中 ---------- */
+/* ---------- Pager（同上） ---------- */
 function Pager({ view, routeLoading, hash, stackKey }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -232,7 +205,6 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     if (routeLoading || busy) return;
     setBusy(true);
     const usp = new URLSearchParams(location.search);
-
     const stack = readStackSS(stackKey);
     stack.push(usp.get("tAfter") || "");
     writeStackSS(stackKey, stack);
@@ -248,7 +220,6 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     if (routeLoading || busy) return;
     const stack = readStackSS(stackKey);
     if (stack.length === 0) return;
-
     setBusy(true);
     const prevAfter = stack.pop() || "";
     writeStackSS(stackKey, stack);
@@ -266,27 +237,12 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   }, [navigation.state]);
 
   return (
-    <div
-      style={{
-        borderTop: "1px solid var(--p-color-border, #e1e3e5)",
-        padding: "12px 0",
-        marginTop: 16,
-      }}
-    >
+    <div style={{ borderTop: "1px solid var(--p-color-border, #e1e3e5)", padding: "12px 0", marginTop: 16 }}>
       <InlineStack align="center" gap="200">
-        <Button
-          onClick={goPrev}
-          disabled={!canPrev || routeLoading || busy}
-          loading={routeLoading || busy}
-        >
+        <Button onClick={goPrev} disabled={!canPrev || routeLoading || busy} loading={routeLoading || busy}>
           Prev page
         </Button>
-        <Button
-          primary
-          onClick={goNext}
-          disabled={routeLoading || busy}
-          loading={routeLoading || busy}
-        >
+        <Button primary onClick={goNext} disabled={routeLoading || busy} loading={routeLoading || busy}>
           Next page
         </Button>
       </InlineStack>
@@ -294,7 +250,7 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   );
 }
 
-/* ---------- Shared Section（source 固定为 'tag'） ---------- */
+/* ---------- Section & Skeleton（同上） ---------- */
 function Section({ title, source, pool, visible, products, saver }) {
   const initialSelected = useMemo(() => {
     const m = new Map();
@@ -329,12 +285,8 @@ function Section({ title, source, pool, visible, products, saver }) {
     <saver.Form method="post">
       <input type="hidden" name="source" value={source} />
       <InlineStack align="space-between" blockAlign="center">
-        <Text as="h2" variant="headingLg">
-          {title}
-        </Text>
-        <Button submit primary>
-          Save visible list (mentions)
-        </Button>
+        <Text as="h2" variant="headingLg">{title}</Text>
+        <Button submit primary>Save visible list (mentions)</Button>
       </InlineStack>
 
       <div
@@ -361,27 +313,13 @@ function Section({ title, source, pool, visible, products, saver }) {
                   <Text as="span" variant="bodySm" tone="subdued">
                     {item.timestamp ? new Date(item.timestamp).toLocaleString() : ""}
                   </Text>
-                  {item.username && (
-                    <Text as="span" variant="bodySm" tone="subdued">
-                      @{item.username}
-                    </Text>
-                  )}
+                  {item.username && <Text as="span" variant="bodySm" tone="subdued">@{item.username}</Text>}
                 </InlineStack>
 
                 <a href={item.permalink} target="_blank" rel="noreferrer">
                   {isVideo ? (
-                    <video
-                      controls
-                      muted
-                      preload="metadata"
-                      playsInline
-                      style={{
-                        width: "100%",
-                        height: 200,
-                        objectFit: "cover",
-                        borderRadius: 8,
-                      }}
-                    >
+                    <video controls muted preload="metadata" playsInline
+                      style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}>
                       <source src={item.media_url || ""} type="video/mp4" />
                     </video>
                   ) : (
@@ -391,15 +329,8 @@ function Section({ title, source, pool, visible, products, saver }) {
                       loading="lazy"
                       decoding="async"
                       referrerPolicy="no-referrer"
-                      style={{
-                        width: "100%",
-                        height: 200,
-                        objectFit: "cover",
-                        borderRadius: 8,
-                      }}
-                      onError={(e) => {
-                        e.currentTarget.src = TINY;
-                      }}
+                      style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
+                      onError={(e) => { e.currentTarget.src = TINY; }}
                     />
                   )}
                 </a>
@@ -409,11 +340,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                   {item.caption && item.caption.length > 160 ? "…" : ""}
                 </Text>
 
-                <Checkbox
-                  label="Show on site"
-                  checked={isChecked}
-                  onChange={() => toggle(item.id, item)}
-                />
+                <Checkbox label="Show on site" checked={isChecked} onChange={() => toggle(item.id, item)} />
 
                 {isChecked && (
                   <>
@@ -425,10 +352,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                     />
                     <Select
                       label="Linked Product"
-                      options={products.map((p) => ({
-                        label: p.title,
-                        value: p.handle,
-                      }))}
+                      options={products.map((p) => ({ label: p.title, value: p.handle }))}
                       value={chosenProducts[0] || ""}
                       onChange={(v) => changeProducts(item.id, v)}
                     />
@@ -456,6 +380,28 @@ function Section({ title, source, pool, visible, products, saver }) {
         })}
       </div>
     </saver.Form>
+  );
+}
+
+function GridSkeleton() {
+  return (
+    <div
+      style={{
+        marginTop: 16,
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
+        gap: 24,
+      }}
+    >
+      {Array.from({ length: 12 }).map((_, i) => (
+        <Card key={i} padding="400">
+          <div style={{ width: "100%", height: 200, background: "var(--p-color-bg-surface-tertiary, #F1F2F4)", borderRadius: 8 }} />
+          <div style={{ marginTop: 12 }}>
+            <SkeletonBodyText lines={2} />
+          </div>
+        </Card>
+      ))}
+    </div>
   );
 }
 
