@@ -20,7 +20,7 @@ import {
   Divider,
   Tabs,
 } from "@shopify/polaris";
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import fs from "fs/promises";
 import path from "path";
 
@@ -57,19 +57,29 @@ async function readJsonSafe(file, fallback = "[]") {
     return JSON.parse(fallback);
   }
 }
-function readStack(paramValue) {
-  if (!paramValue) return [];
+function readStackSS(key) {
   try {
-    return JSON.parse(Buffer.from(paramValue, "base64").toString("utf-8")) || [];
+    const raw = sessionStorage.getItem(key);
+    return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
   }
 }
-function writeStack(arr) {
+function writeStackSS(key, arr) {
   try {
-    return Buffer.from(JSON.stringify(arr), "utf-8").toString("base64");
+    sessionStorage.setItem(key, JSON.stringify(arr));
+  } catch {}
+}
+function clearStackSS(key) {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {}
+}
+function b64ToObj(b64) {
+  try {
+    return JSON.parse(Buffer.from(b64 || "", "base64").toString("utf-8")) || {};
   } catch {
-    return "";
+    return {};
   }
 }
 
@@ -183,16 +193,32 @@ export async function action({ request }) {
   return json({ ok: true });
 }
 
-/* ---------- Page (tabs with hash; client caches per tab; prev/next + loading) ---------- */
+/* ---------- Page (tabs with hash; client caches; per-tab stacks in sessionStorage) ---------- */
 export default function AdminUGC() {
   const data = useLoaderData();
   const saver = useFetcher();
   const refresher = useFetcher();
   const navigate = useNavigate();
   const location = useLocation();
-  const navigation = useNavigation(); // route transition state
+  const navigation = useNavigation();
 
-  // Tabs via hash to avoid loader on switch
+  // Ensure there is a hash on first mount
+  useEffect(() => {
+    if (!location.hash) {
+      navigate("#hashtag", { replace: true, preventScrollReset: true });
+    }
+  }, []); // eslint-disable-line
+
+  // Scroll to current tab container when navigation settles
+  useEffect(() => {
+    if (navigation.state === "idle") {
+      const id = location.hash?.slice(1) || "hashtag";
+      const el = document.getElementById(`tab-${id}`);
+      if (el) el.scrollIntoView({ block: "start", behavior: "instant" });
+    }
+  }, [navigation.state, location.hash]);
+
+  // Tabs via hash
   const tabs = [
     { id: "hashtag", content: "Hashtag (#)" },
     { id: "mentions", content: "Mentions (@)" },
@@ -211,15 +237,14 @@ export default function AdminUGC() {
     });
   };
 
-  // ---- NEW: client caches so returning to a tab shows the last loaded page ----
-  // We update the cache ONLY when the relevant search params for that tab change,
-  // so switching tabs (hash only) won't wipe it.
+  // URL params we care about (to detect page change)
   const usp = new URLSearchParams(location.search);
   const hCursorParam = usp.get("hCursor") || "";
   const hSizeParam = usp.get("hSize") || "";
   const tAfterParam = usp.get("tAfter") || "";
   const tSizeParam = usp.get("tSize") || "";
 
+  // Client caches per tab (stable UI when switching tabs)
   const [hashtagView, setHashtagView] = useState({
     items: data.hashtag.items,
     nextCursorB64: data.hashtag.nextCursorB64,
@@ -233,7 +258,7 @@ export default function AdminUGC() {
     visible: data.mentions.visible,
   });
 
-  // update hashtag cache when its own cursor/size changed (i.e., loader ran for hashtag)
+  // Update caches only when their own query params changed (i.e., their page changed)
   useEffect(() => {
     setHashtagView({
       items: data.hashtag.items,
@@ -241,10 +266,10 @@ export default function AdminUGC() {
       pageSize: data.hashtag.pageSize,
       visible: data.hashtag.visible,
     });
+    // do NOT clear hashtag stack here; stack persists in sessionStorage per tab
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hCursorParam, hSizeParam, data.hashtag.items, data.hashtag.nextCursorB64, data.hashtag.pageSize]);
 
-  // update mentions cache when its own cursor/size changed
   useEffect(() => {
     setMentionsView({
       items: data.mentions.items,
@@ -255,7 +280,7 @@ export default function AdminUGC() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tAfterParam, tSizeParam, data.mentions.items, data.mentions.nextAfter, data.mentions.pageSize]);
 
-  const isLoading = navigation.state !== "idle";
+  const routeLoading = navigation.state !== "idle";
 
   return (
     <Page title="UGC Admin (Hashtag & Mentions)">
@@ -278,7 +303,7 @@ export default function AdminUGC() {
               view={hashtagView}
               products={data.products}
               saver={saver}
-              routeLoading={isLoading}
+              routeLoading={routeLoading}
             />
           )}
           {selectedIndex === 1 && (
@@ -286,7 +311,7 @@ export default function AdminUGC() {
               view={mentionsView}
               products={data.products}
               saver={saver}
-              routeLoading={isLoading}
+              routeLoading={routeLoading}
             />
           )}
         </Tabs>
@@ -295,35 +320,55 @@ export default function AdminUGC() {
   );
 }
 
-/* ---------- Tab: Hashtag (uses client cache 'view') ---------- */
+/* ---------- Tab: Hashtag (sessionStorage stack) ---------- */
 function TabHashtag({ view, products, saver, routeLoading }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const [busy, setBusy] = useState(false); // extra debounce to avoid double-clicks
 
-  const uspRead = new URLSearchParams(location.search);
-  const hStackArr = readStack(uspRead.get("hStack") || "");
-  const canPrev = hStackArr.length > 0;
+  // compute prev availability from sessionStorage stack
+  const stackKey = "ugc:hStack";
+  const canPrev = (readStackSS(stackKey).length > 0);
 
   const goNext = () => {
+    if (routeLoading || busy) return;
+    setBusy(true);
     const usp = new URLSearchParams(location.search);
-    const stack = readStack(usp.get("hStack") || "");
-    stack.push(usp.get("hCursor") || ""); // may be empty on first page
-    usp.set("hStack", writeStack(stack));
+
+    // push current cursor into hashtag stack (may be empty on first page)
+    const stack = readStackSS(stackKey);
+    stack.push(usp.get("hCursor") || "");
+    writeStackSS(stackKey, stack);
+
+    // set next cursor from current view
     usp.set("hCursor", view.nextCursorB64 || "");
     usp.set("hSize", String(view.pageSize || 12));
-    navigate(`?${usp.toString()}#hashtag`, { preventScrollReset: true /* push history */ });
+
+    navigate(`?${usp.toString()}#hashtag`, { preventScrollReset: true });
   };
 
   const goPrev = () => {
+    if (routeLoading || busy) return;
+    const stack = readStackSS(stackKey);
+    if (stack.length === 0) return;
+
+    setBusy(true);
+    const prevCursor = stack.pop() || "";
+    writeStackSS(stackKey, stack);
+
     const usp = new URLSearchParams(location.search);
-    const stack = readStack(usp.get("hStack") || "");
-    const prevCursor = stack.pop() || ""; // empty means back to first page
-    usp.set("hStack", writeStack(stack));
     if (prevCursor) usp.set("hCursor", prevCursor);
-    else usp.delete("hCursor");
+    else usp.delete("hCursor"); // back to first page
     usp.set("hSize", String(view.pageSize || 12));
+
     navigate(`?${usp.toString()}#hashtag`, { preventScrollReset: true });
   };
+
+  // when route finishes, clear busy
+  const navigation = useNavigation();
+  useEffect(() => {
+    if (navigation.state === "idle") setBusy(false);
+  }, [navigation.state]);
 
   return (
     <BlockStack gap="400" id="tab-hashtag">
@@ -337,10 +382,10 @@ function TabHashtag({ view, products, saver, routeLoading }) {
       />
 
       <InlineStack align="end" gap="200">
-        <Button onClick={goPrev} disabled={!canPrev || routeLoading} loading={routeLoading}>
+        <Button onClick={goPrev} disabled={!canPrev || routeLoading || busy} loading={routeLoading || busy}>
           Prev page
         </Button>
-        <Button onClick={goNext} primary disabled={routeLoading} loading={routeLoading}>
+        <Button onClick={goNext} primary disabled={routeLoading || busy} loading={routeLoading || busy}>
           Next page
         </Button>
       </InlineStack>
@@ -348,41 +393,56 @@ function TabHashtag({ view, products, saver, routeLoading }) {
   );
 }
 
-/* ---------- Tab: Mentions (uses client cache 'view') ---------- */
+/* ---------- Tab: Mentions (sessionStorage stack) ---------- */
 function TabMentions({ view, products, saver, routeLoading }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const [busy, setBusy] = useState(false);
 
-  const uspRead = new URLSearchParams(location.search);
-  const tStackArr = readStack(uspRead.get("tStack") || "");
-  const canPrev = tStackArr.length > 0;
+  const stackKey = "ugc:tStack";
+  const canPrev = (readStackSS(stackKey).length > 0);
 
   const goNext = () => {
+    if (routeLoading || busy) return;
+    setBusy(true);
     const usp = new URLSearchParams(location.search);
-    const stack = readStack(usp.get("tStack") || "");
+
+    const stack = readStackSS(stackKey);
     stack.push(usp.get("tAfter") || "");
-    usp.set("tStack", writeStack(stack));
+    writeStackSS(stackKey, stack);
 
     if (view.nextAfter) usp.set("tAfter", view.nextAfter);
     else usp.delete("tAfter");
     usp.set("tSize", String(view.pageSize || 12));
+
     navigate(`?${usp.toString()}#mentions`, { preventScrollReset: true });
   };
 
   const goPrev = () => {
-    const usp = new URLSearchParams(location.search);
-    const stack = readStack(usp.get("tStack") || "");
+    if (routeLoading || busy) return;
+    const stack = readStackSS(stackKey);
+    if (stack.length === 0) return;
+
+    setBusy(true);
     const prevAfter = stack.pop() || "";
-    usp.set("tStack", writeStack(stack));
+    writeStackSS(stackKey, stack);
+
+    const usp = new URLSearchParams(location.search);
     if (prevAfter) usp.set("tAfter", prevAfter);
-    else usp.delete("tAfter"); // back to first
+    else usp.delete("tAfter");
     usp.set("tSize", String(view.pageSize || 12));
+
     navigate(`?${usp.toString()}#mentions`, { preventScrollReset: true });
   };
 
+  const navigation = useNavigation();
+  useEffect(() => {
+    if (navigation.state === "idle") setBusy(false);
+  }, [navigation.state]);
+
   return (
     <BlockStack gap="400" id="tab-mentions">
-      <Section
+    <Section
         title="📣 Mentions (@)"
         source="tag"
         pool={view.items}
@@ -392,10 +452,10 @@ function TabMentions({ view, products, saver, routeLoading }) {
       />
 
       <InlineStack align="end" gap="200">
-        <Button onClick={goPrev} disabled={!canPrev || routeLoading} loading={routeLoading}>
+        <Button onClick={goPrev} disabled={!canPrev || routeLoading || busy} loading={routeLoading || busy}>
           Prev page
         </Button>
-        <Button onClick={goNext} primary disabled={routeLoading} loading={routeLoading}>
+        <Button onClick={goNext} primary disabled={routeLoading || busy} loading={routeLoading || busy}>
           Next page
         </Button>
       </InlineStack>
