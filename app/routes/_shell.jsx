@@ -1,20 +1,29 @@
 // app/routes/_shell.jsx
 import { json } from "@remix-run/node";
-import { Outlet, useLocation, useLoaderData, useNavigate } from "@remix-run/react";
+import { Outlet, useLocation, useLoaderData, Link, useNavigation } from "@remix-run/react";
 import { AppProvider as ShopifyAppProvider } from "@shopify/shopify-app-remix/react";
-import { Frame, Navigation } from "@shopify/polaris";
+import { Frame, Navigation, Loading } from "@shopify/polaris";
 import { useMemo } from "react";
 
 export const loader = async () => {
   return json({ apiKey: process.env.SHOPIFY_API_KEY || "" });
 };
 
+// 把 Polaris 的链接组件换成 Remix Link（带 prefetch）
+function RemixPolarisLink({ url, children, external, ...rest }) {
+  if (external) return <a href={url} {...rest}>{children}</a>;
+  return (
+    <Link to={url} prefetch="intent" {...rest}>
+      {children}
+    </Link>
+  );
+}
+
 export default function ShellLayout() {
   const { apiKey } = useLoaderData();
   const location = useLocation();
-  const navigate = useNavigate();
+  const navigation = useNavigation();
 
-  // 左侧导航
   const items = useMemo(
     () => [
       { label: "Home", url: "/app", match: /^\/app\/?$/ },
@@ -24,16 +33,14 @@ export default function ShellLayout() {
     []
   );
 
-  // Polaris Navigation 支持 onClick；我们用 client 跳转更顺滑
   const navItems = items.map((it) => ({
     label: it.label,
     url: it.url,
     selected: it.match.test(location.pathname),
-    onClick: () => navigate(it.url),
   }));
 
   return (
-    <ShopifyAppProvider isEmbeddedApp apiKey={apiKey}>
+    <ShopifyAppProvider isEmbeddedApp apiKey={apiKey} linkComponent={RemixPolarisLink}>
       <Frame
         navigation={
           <Navigation location={location.pathname}>
@@ -41,22 +48,9 @@ export default function ShellLayout() {
           </Navigation>
         }
       >
-        {/* 悬停预取，提升点击响应 */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              document.addEventListener('mouseover', (e) => {
-                const a = e.target.closest('a[data-prefetch="intent"]');
-                if (!a || a.__pf) return;
-                a.__pf = true;
-                const l = document.createElement('link');
-                l.rel = 'prefetch';
-                l.href = a.href;
-                document.head.appendChild(l);
-              }, {passive: true});
-            `,
-          }}
-        />
+        {/* 顶部细进度条：路由在加载时显示 */}
+        {navigation.state !== "idle" && <Loading />}
+
         <div style={{ padding: 16 }}>
           <Outlet />
         </div>
