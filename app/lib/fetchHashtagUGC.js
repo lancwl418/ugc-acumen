@@ -172,7 +172,7 @@ export async function fetchInstagramByPermalink(permalink) {
     // 1) oEmbed → media_id
     const oe = new URL("https://graph.facebook.com/v23.0/instagram_oembed");
     oe.searchParams.set("url", url);
-    oe.searchParams.set("access_token", OEMBED);
+    oe.searchParams.set("access_token", USER_TOKEN);
     oe.searchParams.set("omitscript", "true");
     oe.searchParams.set("hidecaption", "true");
     const oeRes = await withLimit(()=>fetch(oe));
