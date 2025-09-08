@@ -1,4 +1,4 @@
-// app/routes/admin.hashtagugc.jsx
+// app/routes/admin.mentionsugc.jsx
 import { json } from "@remix-run/node";
 import {
   useLoaderData,
@@ -23,12 +23,12 @@ import fs from "fs/promises";
 import path from "path";
 
 import {
-  VISIBLE_HASHTAG_PATH,
-  ensureVisibleHashtagFile,
+  VISIBLE_TAG_PATH,
+  ensureVisibleTagFile,
 } from "../lib/persistPaths.js";
 
 import {
-  fetchHashtagUGCPage,
+  fetchTagUGCPage,
   fillMissingMediaOnce,
 } from "../lib/fetchHashtagUGC.js";
 
@@ -66,46 +66,39 @@ function writeStackSS(key, arr) {
   } catch {}
 }
 
-/* ---------- Loader: only hashtag flow ---------- */
+/* ---------- Loader (仅 mentions 数据流) ---------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
 
-  const hSize = Math.min(40, Math.max(6, Number(url.searchParams.get("hSize") || 12)));
-  const hCursorB64 = url.searchParams.get("hCursor") || "";
-  let hCursors = {};
-  try {
-    if (hCursorB64) {
-      hCursors = JSON.parse(Buffer.from(hCursorB64, "base64").toString("utf-8"));
-    }
-  } catch {}
+  // Mentions pagination state
+  const tSize = Math.min(40, Math.max(6, Number(url.searchParams.get("tSize") || 12)));
+  const tAfter = url.searchParams.get("tAfter") || "";
 
-  await ensureVisibleHashtagFile();
-  const [hashtagVisible, products] = await Promise.all([
-    readJsonSafe(VISIBLE_HASHTAG_PATH),
+  await ensureVisibleTagFile();
+  const [tagVisible, products] = await Promise.all([
+    readJsonSafe(VISIBLE_TAG_PATH),
     readJsonSafe(path.resolve("public/products.json"), "[]"),
   ]);
 
-  const hPage = await fetchHashtagUGCPage({ limit: hSize, cursors: hCursors }).catch(() => ({
+  const tPage = await fetchTagUGCPage({ limit: tSize, after: tAfter }).catch(() => ({
     items: [],
-    nextCursors: {},
+    nextAfter: "",
   }));
 
-  const hItems = await Promise.all(
-    (hPage.items || []).map((it) =>
-      it.media_url || it.thumbnail_url ? it : fillMissingMediaOnce(it, { source: "hashtag" })
+  // Ensure media fields exist
+  const tItems = await Promise.all(
+    (tPage.items || []).map((it) =>
+      it.media_url || it.thumbnail_url ? it : fillMissingMediaOnce(it, { source: "tag" })
     )
   );
 
   return json(
     {
-      hashtag: {
-        items: hItems,
-        visible: hashtagVisible,
-        nextCursorB64: Buffer.from(
-          JSON.stringify(hPage.nextCursors || {}),
-          "utf-8"
-        ).toString("base64"),
-        pageSize: hSize,
+      mentions: {
+        items: tItems,
+        visible: tagVisible,
+        nextAfter: tPage.nextAfter || "",
+        pageSize: tSize,
       },
       products,
     },
@@ -113,13 +106,13 @@ export async function loader({ request }) {
   );
 }
 
-/* ---------- Action: only write VISIBLE_HASHTAG_PATH ---------- */
+/* ---------- Action（仅写 VISIBLE_TAG_PATH） ---------- */
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
   if (op === "refresh") {
     try {
-      await fetchHashtagUGCPage({ limit: 6 });
+      await fetchTagUGCPage({ limit: 6 });
     } catch {}
     return json({ ok: true });
   }
@@ -141,41 +134,41 @@ export async function action({ request }) {
     });
   }
   const list = Array.from(map.values());
-  await ensureVisibleHashtagFile();
-  await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(list, null, 2), "utf-8");
+  await ensureVisibleTagFile();
+  await fs.writeFile(VISIBLE_TAG_PATH, JSON.stringify(list, null, 2), "utf-8");
 
   return json({ ok: true });
 }
 
-/* ---------- Page: Hashtag admin (standalone) ---------- */
-export default function AdminHashtagUGC() {
+/* ---------- Page（独立 Mentions 管理页） ---------- */
+export default function AdminMentionsUGC() {
   const data = useLoaderData();
-  const saver = useFetcher();
-  const refresher = useFetcher();
+  const saver = useFetcher();      // 保存可见列表
+  const refresher = useFetcher();  // 刷新池
   const navigate = useNavigate();
   const location = useLocation();
   const navigation = useNavigation();
 
   const usp = new URLSearchParams(location.search);
-  const hCursorParam = usp.get("hCursor") || "";
-  const hSizeParam = usp.get("hSize") || "";
+  const tAfterParam = usp.get("tAfter") || "";
+  const tSizeParam = usp.get("tSize") || "";
 
-  const [hashtagView, setHashtagView] = useState({
-    items: data.hashtag.items,
-    nextCursorB64: data.hashtag.nextCursorB64,
-    pageSize: data.hashtag.pageSize,
-    visible: data.hashtag.visible,
+  const [mentionsView, setMentionsView] = useState({
+    items: data.mentions.items,
+    nextAfter: data.mentions.nextAfter,
+    pageSize: data.mentions.pageSize,
+    visible: data.mentions.visible,
   });
 
   useEffect(() => {
-    setHashtagView({
-      items: data.hashtag.items,
-      nextCursorB64: data.hashtag.nextCursorB64,
-      pageSize: data.hashtag.pageSize,
-      visible: data.hashtag.visible,
+    setMentionsView({
+      items: data.mentions.items,
+      nextAfter: data.mentions.nextAfter,
+      pageSize: data.mentions.pageSize,
+      visible: data.mentions.visible,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hCursorParam, hSizeParam, data.hashtag.items, data.hashtag.nextCursorB64, data.hashtag.pageSize]);
+  }, [tAfterParam, tSizeParam, data.mentions.items, data.mentions.nextAfter, data.mentions.pageSize]);
 
   const routeLoading = navigation.state !== "idle";
 
@@ -183,38 +176,38 @@ export default function AdminHashtagUGC() {
     <Page>
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h1" variant="headingLg">
-          UGC Admin — Hashtags (#)
+          UGC Admin — Mentions (@)
         </Text>
         <refresher.Form method="post">
           <input type="hidden" name="op" value="refresh" />
           <Button submit loading={refresher.state !== "idle"}>
-            Refresh Hashtag Pool
+            Refresh Mentions Pool
           </Button>
         </refresher.Form>
       </InlineStack>
 
-      <BlockStack gap="400" id="tab-hashtag" style={{ marginTop: 16 }}>
+      <BlockStack gap="400" id="tab-mentions" style={{ marginTop: 16 }}>
         <Section
-          title="Hashtag (#)"
-          source="hashtag"
-          pool={hashtagView.items}
-          visible={hashtagView.visible}
+          title="📣 Mentions (@)"
+          source="tag"
+          pool={mentionsView.items}
+          visible={mentionsView.visible}
           products={data.products}
           saver={saver}
         />
 
         <Pager
-          view={hashtagView}
+          view={mentionsView}
           routeLoading={routeLoading}
-          hash="#hashtag"
-          stackKey="ugc:hStack"
+          hash="#mentions"
+          stackKey="ugc:tStack"
         />
       </BlockStack>
     </Page>
   );
 }
 
-/* ---------- Pager: prev/next with sessionStorage stack ---------- */
+/* ---------- Pager（与原 Mentions Tab 一致的前后翻页逻辑） ---------- */
 function Pager({ view, routeLoading, hash, stackKey }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -229,11 +222,12 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     const usp = new URLSearchParams(location.search);
 
     const stack = readStackSS(stackKey);
-    stack.push(usp.get("hCursor") || "");
+    stack.push(usp.get("tAfter") || "");
     writeStackSS(stackKey, stack);
 
-    usp.set("hCursor", view.nextCursorB64 || "");
-    usp.set("hSize", String(view.pageSize || 12));
+    if (view.nextAfter) usp.set("tAfter", view.nextAfter);
+    else usp.delete("tAfter");
+    usp.set("tSize", String(view.pageSize || 12));
 
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
@@ -244,13 +238,13 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     if (stack.length === 0) return;
 
     setBusy(true);
-    const prevCursor = stack.pop() || "";
+    const prevAfter = stack.pop() || "";
     writeStackSS(stackKey, stack);
 
     const usp = new URLSearchParams(location.search);
-    if (prevCursor) usp.set("hCursor", prevCursor);
-    else usp.delete("hCursor"); // back to first page
-    usp.set("hSize", String(view.pageSize || 12));
+    if (prevAfter) usp.set("tAfter", prevAfter);
+    else usp.delete("tAfter");
+    usp.set("tSize", String(view.pageSize || 12));
 
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
@@ -271,7 +265,7 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   );
 }
 
-/* ---------- Shared Section (source 固定为 hashtag) ---------- */
+/* ---------- Shared Section（与原 Section 基本一致，仅 source 固定为 'tag'） ---------- */
 function Section({ title, source, pool, visible, products, saver }) {
   const initialSelected = useMemo(() => {
     const m = new Map();
@@ -310,7 +304,7 @@ function Section({ title, source, pool, visible, products, saver }) {
           {title}
         </Text>
         <Button submit primary>
-          Save visible list (hashtags)
+          Save visible list (mentions)
         </Button>
       </InlineStack>
 
@@ -331,10 +325,10 @@ function Section({ title, source, pool, visible, products, saver }) {
           const thumb = item.thumbnail_url || item.media_url || TINY;
 
           return (
-            <Card key={`hashtag-${item.id}`} padding="400">
+            <Card key={`tag-${item.id}`} padding="400">
               <BlockStack gap="200">
                 <InlineStack gap="200" blockAlign="center">
-                  <Tag>#{item.hashtag || "hashtag"}</Tag>
+                  <Tag>@mention</Tag>
                   <Text as="span" variant="bodySm" tone="subdued">
                     {item.timestamp ? new Date(item.timestamp).toLocaleString() : ""}
                   </Text>
