@@ -66,7 +66,7 @@ function writeStackSS(key, arr) {
   } catch {}
 }
 
-/* ---------- Loader (仅 mentions 数据流) ---------- */
+/* ---------- Loader (only mentions flow) ---------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
 
@@ -106,7 +106,7 @@ export async function loader({ request }) {
   );
 }
 
-/* ---------- Action（仅写 VISIBLE_TAG_PATH） ---------- */
+/* ---------- Action（only write VISIBLE_TAG_PATH） ---------- */
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
@@ -143,8 +143,8 @@ export async function action({ request }) {
 /* ---------- Page（独立 Mentions 管理页） ---------- */
 export default function AdminMentionsUGC() {
   const data = useLoaderData();
-  const saver = useFetcher();      // 保存可见列表
-  const refresher = useFetcher();  // 刷新池
+  const saver = useFetcher();
+  const refresher = useFetcher();
   const navigate = useNavigate();
   const location = useLocation();
   const navigation = useNavigation();
@@ -186,15 +186,27 @@ export default function AdminMentionsUGC() {
         </refresher.Form>
       </InlineStack>
 
-      <BlockStack gap="400" id="tab-mentions" style={{ marginTop: 16 }}>
-        <Section
-          title="📣 Mentions (@)"
-          source="tag"
-          pool={mentionsView.items}
-          visible={mentionsView.visible}
-          products={data.products}
-          saver={saver}
-        />
+      {/* 占满页面高度，确保页脚按钮贴底 */}
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          minHeight: "calc(100vh - 120px)",
+          marginTop: 16,
+        }}
+      >
+        <div style={{ flex: "1 1 auto" }}>
+          <BlockStack gap="400" id="tab-mentions">
+            <Section
+              title="📣 Mentions (@)"
+              source="tag"
+              pool={mentionsView.items}
+              visible={mentionsView.visible}
+              products={data.products}
+              saver={saver}
+            />
+          </BlockStack>
+        </div>
 
         <Pager
           view={mentionsView}
@@ -202,12 +214,12 @@ export default function AdminMentionsUGC() {
           hash="#mentions"
           stackKey="ugc:tStack"
         />
-      </BlockStack>
+      </div>
     </Page>
   );
 }
 
-/* ---------- Pager（与原 Mentions Tab 一致的前后翻页逻辑） ---------- */
+/* ---------- Pager：底部居中 ---------- */
 function Pager({ view, routeLoading, hash, stackKey }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -254,18 +266,35 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   }, [navigation.state]);
 
   return (
-    <InlineStack align="end" gap="200">
-      <Button onClick={goPrev} disabled={!canPrev || routeLoading || busy} loading={routeLoading || busy}>
-        Prev page
-      </Button>
-      <Button onClick={goNext} primary disabled={routeLoading || busy} loading={routeLoading || busy}>
-        Next page
-      </Button>
-    </InlineStack>
+    <div
+      style={{
+        borderTop: "1px solid var(--p-color-border, #e1e3e5)",
+        padding: "12px 0",
+        marginTop: 16,
+      }}
+    >
+      <InlineStack align="center" gap="200">
+        <Button
+          onClick={goPrev}
+          disabled={!canPrev || routeLoading || busy}
+          loading={routeLoading || busy}
+        >
+          Prev page
+        </Button>
+        <Button
+          primary
+          onClick={goNext}
+          disabled={routeLoading || busy}
+          loading={routeLoading || busy}
+        >
+          Next page
+        </Button>
+      </InlineStack>
+    </div>
   );
 }
 
-/* ---------- Shared Section（与原 Section 基本一致，仅 source 固定为 'tag'） ---------- */
+/* ---------- Shared Section（source 固定为 'tag'） ---------- */
 function Section({ title, source, pool, visible, products, saver }) {
   const initialSelected = useMemo(() => {
     const m = new Map();

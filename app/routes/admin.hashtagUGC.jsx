@@ -193,15 +193,27 @@ export default function AdminHashtagUGC() {
         </refresher.Form>
       </InlineStack>
 
-      <BlockStack gap="400" id="tab-hashtag" style={{ marginTop: 16 }}>
-        <Section
-          title="Hashtag (#)"
-          source="hashtag"
-          pool={hashtagView.items}
-          visible={hashtagView.visible}
-          products={data.products}
-          saver={saver}
-        />
+      {/* 占满页面高度，确保页脚按钮贴底 */}
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          minHeight: "calc(100vh - 120px)",
+          marginTop: 16,
+        }}
+      >
+        <div style={{ flex: "1 1 auto" }}>
+          <BlockStack gap="400" id="tab-hashtag">
+            <Section
+              title="Hashtag (#)"
+              source="hashtag"
+              pool={hashtagView.items}
+              visible={hashtagView.visible}
+              products={data.products}
+              saver={saver}
+            />
+          </BlockStack>
+        </div>
 
         <Pager
           view={hashtagView}
@@ -209,12 +221,12 @@ export default function AdminHashtagUGC() {
           hash="#hashtag"
           stackKey="ugc:hStack"
         />
-      </BlockStack>
+      </div>
     </Page>
   );
 }
 
-/* ---------- Pager: prev/next with sessionStorage stack ---------- */
+/* ---------- Pager: bottom-centered footer ---------- */
 function Pager({ view, routeLoading, hash, stackKey }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -249,7 +261,7 @@ function Pager({ view, routeLoading, hash, stackKey }) {
 
     const usp = new URLSearchParams(location.search);
     if (prevCursor) usp.set("hCursor", prevCursor);
-    else usp.delete("hCursor"); // back to first page
+    else usp.delete("hCursor");
     usp.set("hSize", String(view.pageSize || 12));
 
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
@@ -260,14 +272,31 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   }, [navigation.state]);
 
   return (
-    <InlineStack align="end" gap="200">
-      <Button onClick={goPrev} disabled={!canPrev || routeLoading || busy} loading={routeLoading || busy}>
-        Prev page
-      </Button>
-      <Button onClick={goNext} primary disabled={routeLoading || busy} loading={routeLoading || busy}>
-        Next page
-      </Button>
-    </InlineStack>
+    <div
+      style={{
+        borderTop: "1px solid var(--p-color-border, #e1e3e5)",
+        padding: "12px 0",
+        marginTop: 16,
+      }}
+    >
+      <InlineStack align="center" gap="200">
+        <Button
+          onClick={goPrev}
+          disabled={!canPrev || routeLoading || busy}
+          loading={routeLoading || busy}
+        >
+          Prev page
+        </Button>
+        <Button
+          primary
+          onClick={goNext}
+          disabled={routeLoading || busy}
+          loading={routeLoading || busy}
+        >
+          Next page
+        </Button>
+      </InlineStack>
+    </div>
   );
 }
 
