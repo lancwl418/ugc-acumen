@@ -87,7 +87,6 @@ export async function loader({ request }) {
     readJsonSafe(path.resolve("public/products.json"), "[]"),
   ]);
 
-  // 重：IG 拉取用 promise 包装，推给 defer 流式传给前端
   const hashtagPromise = (async () => {
     const hPage = await memo(
       `h:${hSize}:${Buffer.from(JSON.stringify(hCursors), "utf-8").toString("base64")}`,
@@ -110,15 +109,15 @@ export async function loader({ request }) {
 
   return defer(
     {
-      hashtag: hashtagPromise,   // Promise：大数据晚点到
-      visible: hashtagVisible,   // 这些小数据先到，页面能先渲染
+      hashtag: hashtagPromise,   // Promise
+      visible: hashtagVisible,   // small data first
       products,
     },
     { headers: { "Cache-Control": "private, max-age=30" } }
   );
 }
 
-/* ---------- Action: unchanged ---------- */
+/* ---------- Action: 改为合并写入（支持 mode=replace 覆盖） ---------- */
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
@@ -127,10 +126,11 @@ export async function action({ request }) {
     return json({ ok: true });
   }
 
-  const entries = fd.getAll("ugc_entry").map((s) => JSON.parse(s));
-  const map = new Map();
-  for (const e of entries) {
-    map.set(String(e.id), {
+  const mode = String(fd.get("mode") || "merge").toLowerCase();
+
+  const entries = fd.getAll("ugc_entry").map((s) => {
+    const e = JSON.parse(s);
+    return {
       id: String(e.id),
       category: e.category || "camping",
       products: Array.isArray(e.products) ? e.products : [],
@@ -141,12 +141,28 @@ export async function action({ request }) {
       thumbnail_url: e.thumbnail_url || "",
       caption: e.caption || "",
       permalink: e.permalink || "",
-    });
-  }
-  const list = Array.from(map.values());
+    };
+  });
+
   await ensureVisibleHashtagFile();
-  await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(list, null, 2), "utf-8");
-  return json({ ok: true });
+
+  if (mode === "replace") {
+    await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(entries, null, 2), "utf-8");
+    return json({ ok: true, mode: "replace", count: entries.length });
+  }
+
+  // merge（upsert by id）
+  let existing = [];
+  try {
+    existing = JSON.parse(await fs.readFile(VISIBLE_HASHTAG_PATH, "utf-8")) || [];
+  } catch { existing = []; }
+
+  const merged = new Map(existing.map((x) => [String(x.id), x]));
+  for (const e of entries) merged.set(String(e.id), e);
+
+  const toWrite = Array.from(merged.values());
+  await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(toWrite, null, 2), "utf-8");
+  return json({ ok: true, mode: "merge", count: entries.length, total: toWrite.length });
 }
 
 /* ---------- Page ---------- */
@@ -168,7 +184,6 @@ export default function AdminHashtagUGC() {
 
       <div style={{ display: "flex", flexDirection: "column", minHeight: "calc(100vh - 120px)", marginTop: 16 }}>
         <div style={{ flex: "1 1 auto" }}>
-          {/* 这里立刻渲染骨架，等数据好了再填充内容 */}
           <Suspense fallback={<GridSkeleton />}>
             <Await resolve={data.hashtag}>
               {(h) => (
@@ -200,7 +215,7 @@ export default function AdminHashtagUGC() {
   );
 }
 
-/* ---------- Pager（保持不变） ---------- */
+/* ---------- Pager ---------- */
 function Pager({ view, routeLoading, hash, stackKey }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -253,40 +268,54 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   );
 }
 
-/* ---------- Shared Section（原逻辑不动） ---------- */
+/* ---------- Shared Section（同步 visible → selected；默认 merge 保存） ---------- */
 function Section({ title, source, pool, visible, products, saver }) {
   const initialSelected = useMemo(() => {
     const m = new Map();
-    (visible || []).forEach((v) => m.set(v.id, v));
+    (visible || []).forEach((v) => m.set(String(v.id), v));
     return m;
   }, [visible]);
+
   const [selected, setSelected] = useState(initialSelected);
+
+  // 🔄 可见文件更新时，同步前端勾选状态
+  useEffect(() => {
+    const m = new Map();
+    (visible || []).forEach((v) => m.set(String(v.id), v));
+    setSelected(m);
+  }, [visible]);
 
   const toggle = (id, seed) =>
     setSelected((prev) => {
+      const key = String(id);
       const n = new Map(prev);
-      if (n.has(id)) n.delete(id);
-      else n.set(id, seedToVisible(seed));
+      if (n.has(key)) n.delete(key);
+      else n.set(key, seedToVisible(seed));
       return n;
     });
 
   const changeCategory = (id, category) =>
     setSelected((prev) => {
+      const key = String(id);
       const n = new Map(prev);
-      if (n.has(id)) n.get(id).category = category;
+      if (n.has(key)) n.get(key).category = category;
       return n;
     });
 
   const changeProducts = (id, handle) =>
     setSelected((prev) => {
+      const key = String(id);
       const n = new Map(prev);
-      if (n.has(id)) n.get(id).products = handle ? [handle] : [];
+      if (n.has(key)) n.get(key).products = handle ? [handle] : [];
       return n;
     });
 
   return (
     <saver.Form method="post">
       <input type="hidden" name="source" value={source} />
+      {/* 默认合并写入，避免覆盖其它页已选项；需要全量覆盖可改为 mode=replace */}
+      <input type="hidden" name="mode" value="merge" />
+
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h2" variant="headingLg">{title}</Text>
         <Button submit primary>Save visible list (hashtags)</Button>
@@ -301,15 +330,16 @@ function Section({ title, source, pool, visible, products, saver }) {
         }}
       >
         {pool.map((item) => {
+          const key = String(item.id);
           const isVideo = item.media_type === "VIDEO";
-          const picked = selected.get(item.id);
+          const picked = selected.get(key);
           const isChecked = !!picked;
           const category = picked?.category || "camping";
           const chosenProducts = picked?.products || [];
           const thumb = item.thumbnail_url || item.media_url || TINY;
 
           return (
-            <Card key={`hashtag-${item.id}`} padding="400">
+            <Card key={`hashtag-${key}`} padding="400">
               <BlockStack gap="200">
                 <InlineStack gap="200" blockAlign="center">
                   <Tag>#{item.hashtag || "hashtag"}</Tag>
@@ -321,8 +351,13 @@ function Section({ title, source, pool, visible, products, saver }) {
 
                 <a href={item.permalink} target="_blank" rel="noreferrer">
                   {isVideo ? (
-                    <video controls muted preload="metadata" playsInline
-                      style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}>
+                    <video
+                      controls
+                      muted
+                      preload="metadata"
+                      playsInline
+                      style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
+                    >
                       <source src={item.media_url || ""} type="video/mp4" />
                     </video>
                   ) : (
@@ -343,7 +378,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                   {item.caption && item.caption.length > 160 ? "…" : ""}
                 </Text>
 
-                <Checkbox label="Show on site" checked={isChecked} onChange={() => toggle(item.id, item)} />
+                <Checkbox label="Show on site" checked={isChecked} onChange={() => toggle(key, item)} />
 
                 {isChecked && (
                   <>
@@ -351,19 +386,19 @@ function Section({ title, source, pool, visible, products, saver }) {
                       label="Category"
                       options={CATEGORY_OPTIONS}
                       value={category}
-                      onChange={(v) => changeCategory(item.id, v)}
+                      onChange={(v) => changeCategory(key, v)}
                     />
                     <Select
                       label="Linked Product"
                       options={products.map((p) => ({ label: p.title, value: p.handle }))}
                       value={chosenProducts[0] || ""}
-                      onChange={(v) => changeProducts(item.id, v)}
+                      onChange={(v) => changeProducts(key, v)}
                     />
                     <input
                       type="hidden"
                       name="ugc_entry"
                       value={JSON.stringify({
-                        id: item.id,
+                        id: key,
                         category,
                         products: chosenProducts,
                         username: item.username,
@@ -414,7 +449,7 @@ function seedToVisible(seed) {
   return {
     category: "camping",
     products: [],
-    id: seed.id,
+    id: String(seed.id),
     username: seed.username || "",
     timestamp: seed.timestamp || "",
     media_type: seed.media_type || "IMAGE",
