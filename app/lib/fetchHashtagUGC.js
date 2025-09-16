@@ -7,6 +7,7 @@ const PAGE_TOKEN = process.env.PAGE_TOKEN || "";                 // hashtag edge
 const USER_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN || "";     // /tags & mentioned_media & media detail
 const APP_ID     = process.env.META_APP_ID || "";
 const APP_SECRET = process.env.META_APP_SECRET || "";
+// 注意：oEmbed 相关能力正在迁移/收紧，此 token 仅用于 `fetchInstagramByPermalink`（可选功能）
 const OEMBED     = (APP_ID && APP_SECRET) ? `${APP_ID}|${APP_SECRET}` : "";
 const DEFAULT_TAGS = (process.env.HASHTAGS || process.env.HASHTAG || "acumencamera");
 
@@ -116,22 +117,58 @@ export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
   });
 }
 
-/* ============== 仅当“没有可用图片时”才补一次 ============== */
+/* ==================================================================== */
+/* ========== 新增：按 hashtag 扫描，刷新指定条目的 media_url ========= */
+/* ==================================================================== */
+
+/**
+ * 基于 visible 条目中的 `id` 与 `hashtag`，
+ * 通过对应 hashtag 的 top_media（找不到再 recent_media）分页扫描，
+ * 找到同一条 post 后，回写“当下最新”的 media 字段。
+ *
+ * @param {Object} entry  visible 里的一条：至少包含 { id, hashtag, ... }
+ * @param {Object} opts   { per=30, maxPages=3 }
+ * @return entry 的更新副本（找不到则原样返回）
+ */
+export async function refreshMediaUrlByHashtag(entry, { per = 30, maxPages = 3 } = {}) {
+  const tag = String(entry?.hashtag || "").replace(/^#/, "");
+  if (!tag) return entry;
+
+  const hid = await getHashtagId(tag);
+  if (!hid) return entry;
+
+  async function search(edge) {
+    let after = "";
+    for (let i = 0; i < maxPages; i++) {
+      const p = await edgePage({ hashtagId: hid, edge, limit: per, after });
+      const hit = (p.items || []).find((x) => String(x.id) === String(entry.id));
+      if (hit) {
+        return {
+          ...entry,
+          media_type: hit.media_type || entry.media_type,
+          media_url: hit.media_url || entry.media_url,
+          caption: hit.caption ?? entry.caption,
+          permalink: hit.permalink || entry.permalink,
+          timestamp: hit.timestamp || entry.timestamp,
+        };
+      }
+      if (!p.nextAfter) break;
+      after = p.nextAfter;
+    }
+    return null;
+  }
+
+  return (await search("top_media")) || (await search("recent_media")) || entry;
+}
+
+/* ============== 仅当“没有可用图片/视频时”才补一次（不再用 oEmbed） ============== */
 export async function fillMissingMediaOnce(entry, { source="hashtag" } = {}) {
   if (entry.media_url || entry.thumbnail_url) return entry; // 已有就不补
   try {
     if (source === "hashtag") {
-      if (!OEMBED || !entry.permalink) return entry;
-      const u = new URL("https://graph.facebook.com/v23.0/instagram_oembed");
-      u.searchParams.set("url", entry.permalink);
-      u.searchParams.set("access_token", OEMBED);
-      u.searchParams.set("omitscript", "true");
-      u.searchParams.set("hidecaption", "true");
-      u.searchParams.set("maxwidth", "640");
-      const r = await withLimit(()=>fetch(u)); const j = await r.json();
-      const thumb = j?.thumbnail_url || "";
-      if (thumb) return { ...entry, media_url: thumb, thumbnail_url: thumb };
-      return entry;
+      // ⚠️ 以前用 oEmbed 的缩略图，这里改为用 hashtag 扫描回填
+      const refreshed = await refreshMediaUrlByHashtag(entry, { per: 30, maxPages: 2 });
+      return refreshed || entry;
     } else {
       // mentions：single media via mentioned_media.media_id()
       if (!IG_ID || !USER_TOKEN) return entry;
@@ -150,17 +187,15 @@ export async function fillMissingMediaOnce(entry, { source="hashtag" } = {}) {
 }
 
 /* ==================================================================== */
-/* ========== 新增：按 Instagram 链接抓取单条媒体（用于导入） ========== */
+/* ========== 可选：按 Instagram 链接抓取单条媒体（用于导入） ========== */
 /* ==================================================================== */
-
 /**
+ * 说明：此方法仍借助 oEmbed 解析 media_id（官方正在迁移为 Meta oEmbed Read，
+ *       未来字段可能变化）。若你不打算再用 oEmbed，可忽略此函数。
+ *
  * 输入任意 Instagram 帖子/短片链接（/p/... 或 /reel/...），
  * 返回与你 hashtag/mentions 一致的结构：
  * { id, username, timestamp, media_type, media_url, thumbnail_url, caption, permalink, hashtag }
- *
- * 依赖的环境变量：
- *  - OEMBED（APP_ID|APP_SECRET）用于 oEmbed 解析出 media_id
- *  - USER_TOKEN（INSTAGRAM_ACCESS_TOKEN）用于 /{media-id}?fields=...
  */
 export async function fetchInstagramByPermalink(permalink) {
   const url = String(permalink || "").trim();
@@ -169,10 +204,11 @@ export async function fetchInstagramByPermalink(permalink) {
   if (!USER_TOKEN && !PAGE_TOKEN) throw new Error("Missing IG access token (INSTAGRAM_ACCESS_TOKEN or PAGE_TOKEN)");
 
   return withCache(`p:${url}`, 30_000, async () => {
-    // 1) oEmbed → media_id
+    // 1) oEmbed → media_id（注意：未来可能变更/下线该字段）
     const oe = new URL("https://graph.facebook.com/v23.0/instagram_oembed");
     oe.searchParams.set("url", url);
-    oe.searchParams.set("access_token", USER_TOKEN);
+    // 可用 OEMBED 或 USER_TOKEN 其一
+    oe.searchParams.set("access_token", OEMBED || USER_TOKEN);
     oe.searchParams.set("omitscript", "true");
     oe.searchParams.set("hidecaption", "true");
     const oeRes = await withLimit(()=>fetch(oe));
@@ -181,7 +217,7 @@ export async function fetchInstagramByPermalink(permalink) {
       throw new Error(oeJson?.error?.message || `oEmbed failed ${oeRes.status}`);
     }
     const mediaId = oeJson.media_id;
-    const permalinkCanonical = oeJson?.author_url ? url : url; // 保留传入链接
+    const permalinkCanonical = url;
 
     if (!mediaId) throw new Error("No media_id from oEmbed");
 
@@ -219,7 +255,7 @@ export async function fetchInstagramByPermalink(permalink) {
       thumbnail_url: thumb || null,
       caption: m.caption || "",
       permalink: m.permalink || permalinkCanonical,
-      hashtag: "", // 可留空；import 入口不强制归属 hashtag
+      hashtag: "", // 导入入口不强制归属 hashtag
     };
   });
 }
