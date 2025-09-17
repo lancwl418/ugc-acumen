@@ -27,6 +27,8 @@ import path from "path";
 import {
   VISIBLE_HASHTAG_PATH,
   ensureVisibleHashtagFile,
+  // ✅ 新增：原子写入
+  writeVisibleHashtagAtomic,
 } from "../lib/persistPaths.js";
 import {
   fetchHashtagUGCPage,
@@ -117,10 +119,11 @@ export async function loader({ request }) {
   );
 }
 
-/* ---------- Action: 改为合并写入（支持 mode=replace 覆盖） ---------- */
+/* ---------- Action: 合并写入（支持 mode=replace 覆盖），刷新打上时间戳 ---------- */
 export async function action({ request }) {
   const fd = await request.formData();
-  const op = fd.get("op");
+  const op = String(fd.get("op") || "").trim(); // "refresh" | "refreshVisible" | "saveVisible"
+  const nowISO = new Date().toISOString();
 
   // 1) 刷新池子：保持原样
   if (op === "refresh") {
@@ -128,7 +131,7 @@ export async function action({ request }) {
     return json({ ok: true });
   }
 
-  // 2) 刷新已勾选项：根据 hashtag 扫描，回写最新 media_url
+  // 2) 刷新已勾选项：根据 hashtag 扫描，回写最新 media_url + lastRefreshedAt
   if (op === "refreshVisible") {
     const picked = fd.getAll("ugc_entry").map((s) => JSON.parse(s));
     const idSet = new Set(picked.map((e) => String(e.id)));
@@ -139,32 +142,58 @@ export async function action({ request }) {
       visible = JSON.parse(await fs.readFile(VISIBLE_HASHTAG_PATH, "utf-8")) || [];
     } catch { visible = []; }
 
+    const per = Number(fd.get("per") || 30);
+    const maxPages = Number(fd.get("maxPages") || 3);
+
     const updated = [];
     for (const v of visible) {
       if (idSet.has(String(v.id))) {
         try {
           // 通过 hashtag edges(top_media→recent_media) 找回“当下最新”直链
-          updated.push(await refreshMediaUrlByHashtag(v, { per: 30, maxPages: 3 }));
+          const fresh = await refreshMediaUrlByHashtag(v, { per, maxPages });
+          updated.push({
+            ...v,
+            media_url: fresh?.media_url || v.media_url || "",
+            thumbnail_url: fresh?.thumbnail_url ?? v.thumbnail_url ?? null,
+            media_type: fresh?.media_type || v.media_type || "IMAGE",
+            permalink: fresh?.permalink || v.permalink || "",
+            username: fresh?.username || v.username || "",
+            timestamp: fresh?.timestamp || v.timestamp || "",
+            // ✅ 标记这条被刷新过
+            lastRefreshedAt: nowISO,
+          });
         } catch {
-          updated.push(v);
+          // 单条失败不中断，至少更新时间戳，方便你看 visible 是否被触发刷新
+          updated.push({
+            ...v,
+            lastRefreshedAt: nowISO,
+          });
         }
       } else {
         updated.push(v);
       }
     }
 
-    await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(updated, null, 2), "utf-8");
-    return json({ ok: true, op: "refreshVisible", refreshed: idSet.size, total: updated.length });
+    // ✅ 原子写入
+    await writeVisibleHashtagAtomic(updated);
+    return json({
+      ok: true,
+      op: "refreshVisible",
+      refreshed: idSet.size,
+      total: updated.length,
+      // 也回传一个时间给前端日志用
+      lastRefreshedAt: nowISO,
+    });
   }
 
-  // 3) 保存可见列表（replace | merge）
+  // 3) 保存可见列表（replace | merge），op 由前端传 "saveVisible"
   const mode = String(fd.get("mode") || "merge").toLowerCase();
 
   const entries = fd.getAll("ugc_entry").map((s) => {
     const e = JSON.parse(s);
     return {
       id: String(e.id),
-      hashtag: e.hashtag || "",            // ✅ 补上 hashtag
+      hashtag: e.hashtag || "",            // ✅ 保留 hashtag
       category: e.category || "camping",
       products: Array.isArray(e.products) ? e.products : [],
       username: e.username || "",
@@ -174,14 +203,17 @@ export async function action({ request }) {
       thumbnail_url: e.thumbnail_url || "",
       caption: e.caption || "",
       permalink: e.permalink || "",
+      // 可选：记录这条是何时保存/更新进 visible 的
+      savedAt: nowISO,
     };
   });
 
   await ensureVisibleHashtagFile();
 
   if (mode === "replace") {
-    await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(entries, null, 2), "utf-8");
-    return json({ ok: true, mode: "replace", count: entries.length });
+    // ✅ 原子写入
+    await writeVisibleHashtagAtomic(entries);
+    return json({ ok: true, op: "saveVisible", mode: "replace", count: entries.length });
   }
 
   // merge（upsert by id）
@@ -193,13 +225,14 @@ export async function action({ request }) {
   const merged = new Map(existing.map((x) => [String(x.id), x]));
   for (const e of entries) {
     const prev = merged.get(String(e.id)) || {};
-    // 用新值覆盖旧值，同时保留旧值里可能存在但新值没有的字段
-    merged.set(String(e.id), { ...prev, ...e });
+    // 用新值覆盖旧值，同时保留旧值里可能存在但新值没有的字段（如 lastRefreshedAt）
+    merged.set(String(e.id), { ...prev, ...e, id: String(e.id) });
   }
 
   const toWrite = Array.from(merged.values());
-  await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(toWrite, null, 2), "utf-8");
-  return json({ ok: true, mode: "merge", count: entries.length, total: toWrite.length });
+  // ✅ 原子写入
+  await writeVisibleHashtagAtomic(toWrite);
+  return json({ ok: true, op: "saveVisible", mode: "merge", count: entries.length, total: toWrite.length });
 }
 
 
