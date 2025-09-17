@@ -136,6 +136,7 @@ export async function action({ request }) {
       thumbnail_url: e.thumbnail_url || "",
       caption: e.caption || "",
       permalink: e.permalink || "",
+      updated_at: new Date().toISOString()
     };
   });
 
