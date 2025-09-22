@@ -20,7 +20,7 @@ import {
   BlockStack,
   SkeletonBodyText,
 } from "@shopify/polaris";
-import { Suspense, useMemo, useState, useEffect } from "react";
+import { Suspense, useMemo, useState, useEffect, useRef } from "react";
 import fs from "fs/promises";
 import path from "path";
 
@@ -30,11 +30,9 @@ import {
 } from "../lib/persistPaths.js";
 import {
   fetchTagUGCPage,
-  fillMissingMediaOnce,
+  refreshMediaUrlByTag,
 } from "../lib/fetchHashtagUGC.js";
-import { memo } from "../lib/memo.js";
 
-/* ---------- Constants ---------- */
 const CATEGORY_OPTIONS = [
   { label: "Camping Life", value: "camping" },
   { label: "Off-Road", value: "off-road" },
@@ -46,32 +44,22 @@ const CATEGORY_OPTIONS = [
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
-/* ---------- Utils ---------- */
+/* ---------- utils ---------- */
 async function readJsonSafe(file, fallback = "[]") {
-  try {
-    return JSON.parse((await fs.readFile(file, "utf-8")) || fallback);
-  } catch {
-    return JSON.parse(fallback);
-  }
+  try { return JSON.parse((await fs.readFile(file, "utf-8")) || fallback); }
+  catch { return JSON.parse(fallback); }
 }
 function readStackSS(key) {
-  try {
-    const raw = sessionStorage.getItem(key);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+  try { const raw = sessionStorage.getItem(key); return raw ? JSON.parse(raw) : []; }
+  catch { return []; }
 }
 function writeStackSS(key, arr) {
-  try {
-    sessionStorage.setItem(key, JSON.stringify(arr));
-  } catch {}
+  try { sessionStorage.setItem(key, JSON.stringify(arr)); } catch {}
 }
 
-/* ---------- Loader with defer ---------- */
+/* ---------- loader ---------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
-
   const tSize = Math.min(40, Math.max(6, Number(url.searchParams.get("tSize") || 12)));
   const tAfter = url.searchParams.get("tAfter") || "";
 
@@ -81,46 +69,52 @@ export async function loader({ request }) {
     readJsonSafe(path.resolve("public/products.json"), "[]"),
   ]);
 
-  const mentionsPromise = (async () => {
-    const tPage = await memo(
-      `t:${tSize}:${tAfter || "-"}`,
-      30_000,
-      () => fetchTagUGCPage({ limit: tSize, after: tAfter })
-    ).catch(() => ({ items: [], nextAfter: "" }));
-
-    const items = await Promise.all(
-      (tPage.items || []).map((it) =>
-        it.media_url || it.thumbnail_url ? it : fillMissingMediaOnce(it, { source: "tag" })
-      )
-    );
-
-    return {
-      items,
-      nextAfter: tPage.nextAfter || "",
-      pageSize: tSize,
-    };
+  const tagPromise = (async () => {
+    try {
+      const page = await fetchTagUGCPage({ limit: tSize, after: tAfter });
+      return { items: page.items || [], nextAfter: page.nextAfter || "", pageSize: tSize };
+    } catch {
+      return { items: [], nextAfter: "", pageSize: tSize };
+    }
   })();
 
   return defer(
-    {
-      mentions: mentionsPromise, // Promise
-      visible: tagVisible,       // small data first
-      products,
-    },
+    { tag: tagPromise, visible: tagVisible, products },
     { headers: { "Cache-Control": "private, max-age=30" } }
   );
 }
 
-/* ---------- Action（改为合并写入 / 支持 replace） ---------- */
+/* ---------- action ---------- */
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
-  if (op === "refresh") {
-    try { await fetchTagUGCPage({ limit: 6 }); } catch {}
-    return json({ ok: true });
+
+  // 刷新选中：通过 /{IG_ID}/tags 匹配更新并写回 visible
+  if (op === "refreshVisible") {
+    const picked = fd.getAll("ugc_entry").map((s) => JSON.parse(s));
+    const idSet = new Set(picked.map((e) => String(e.id)));
+
+    await ensureVisibleTagFile();
+    let visible = [];
+    try { visible = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || []; } catch {}
+
+    const nowISO = new Date().toISOString();
+    const updated = [];
+    for (const v of visible) {
+      if (!idSet.has(String(v.id))) { updated.push(v); continue; }
+      try {
+        const fresh = await refreshMediaUrlByTag(v, { per: 50, maxPages: 3 });
+        updated.push({ ...fresh, lastRefreshedAt: nowISO });
+      } catch {
+        updated.push({ ...v, lastRefreshedAt: nowISO });
+      }
+    }
+
+    await fs.writeFile(VISIBLE_TAG_PATH, JSON.stringify(updated, null, 2), "utf-8");
+    return json({ ok: true, op: "refreshVisible", refreshed: idSet.size, total: updated.length });
   }
 
-  // 默认合并写入；传 mode=replace 可全量覆盖
+  // 保存可见列表（merge | replace）
   const mode = String(fd.get("mode") || "merge").toLowerCase();
 
   const entries = fd.getAll("ugc_entry").map((s) => {
@@ -136,7 +130,6 @@ export async function action({ request }) {
       thumbnail_url: e.thumbnail_url || "",
       caption: e.caption || "",
       permalink: e.permalink || "",
-      updated_at: new Date().toISOString()
     };
   });
 
@@ -149,22 +142,22 @@ export async function action({ request }) {
 
   // merge（upsert by id）
   let existing = [];
-  try {
-    existing = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || [];
-  } catch {
-    existing = [];
-  }
+  try { existing = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || []; } catch {}
+
   const merged = new Map(existing.map((x) => [String(x.id), x]));
-  for (const e of entries) merged.set(String(e.id), e);
+  for (const e of entries) {
+    const prev = merged.get(String(e.id)) || {};
+    merged.set(String(e.id), { ...prev, ...e });
+  }
 
   const toWrite = Array.from(merged.values());
   await fs.writeFile(VISIBLE_TAG_PATH, JSON.stringify(toWrite, null, 2), "utf-8");
   return json({ ok: true, mode: "merge", count: entries.length, total: toWrite.length });
 }
 
-/* ---------- Page ---------- */
+/* ---------- page ---------- */
 export default function AdminMentionsUGC() {
-  const data = useLoaderData(); // { mentions: Promise, visible, products }
+  const data = useLoaderData(); // { tag: Promise, visible, products }
   const saver = useFetcher();
   const refresher = useFetcher();
   const navigation = useNavigation();
@@ -172,24 +165,21 @@ export default function AdminMentionsUGC() {
   return (
     <Page>
       <InlineStack align="space-between" blockAlign="center">
-        <Text as="h1" variant="headingLg">UGC Admin — Mentions (@)</Text>
-        <refresher.Form method="post">
-          <input type="hidden" name="op" value="refresh" />
-          <Button submit loading={refresher.state !== "idle"}>Refresh Mentions Pool</Button>
-        </refresher.Form>
+        <Text as="h1" variant="headingLg">UGC Admin — Mentions (tags)</Text>
+        <Text as="span" tone="subdued">前端只读 visible_tag_ugc.json</Text>
       </InlineStack>
 
       <div style={{ display: "flex", flexDirection: "column", minHeight: "calc(100vh - 120px)", marginTop: 16 }}>
         <div style={{ flex: "1 1 auto" }}>
           <Suspense fallback={<GridSkeleton />}>
-            <Await resolve={data.mentions}>
-              {(m) => (
+            <Await resolve={data.tag}>
+              {(t) => (
                 <>
                   <BlockStack gap="400" id="tab-mentions">
                     <Section
-                      title="📣 Mentions (@)"
-                      source="tag"
-                      pool={m.items}
+                      title="Mentions (tags)"
+                      source="tags"
+                      pool={t.items}
                       visible={data.visible}
                       products={data.products}
                       saver={saver}
@@ -197,9 +187,9 @@ export default function AdminMentionsUGC() {
                   </BlockStack>
 
                   <Pager
-                    view={m}
+                    view={t}
                     routeLoading={navigation.state !== "idle"}
-                    hash="#mentions"
+                    hash="#tags"
                     stackKey="ugc:tStack"
                   />
                 </>
@@ -228,11 +218,8 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     const stack = readStackSS(stackKey);
     stack.push(usp.get("tAfter") || "");
     writeStackSS(stackKey, stack);
-
-    if (view.nextAfter) usp.set("tAfter", view.nextAfter);
-    else usp.delete("tAfter");
+    usp.set("tAfter", view.nextAfter || "");
     usp.set("tSize", String(view.pageSize || 12));
-
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
 
@@ -243,18 +230,14 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     setBusy(true);
     const prevAfter = stack.pop() || "";
     writeStackSS(stackKey, stack);
-
     const usp = new URLSearchParams(location.search);
     if (prevAfter) usp.set("tAfter", prevAfter);
     else usp.delete("tAfter");
     usp.set("tSize", String(view.pageSize || 12));
-
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
 
-  useEffect(() => {
-    if (navigation.state === "idle") setBusy(false);
-  }, [navigation.state]);
+  useEffect(() => { if (navigation.state === "idle") setBusy(false); }, [navigation.state]);
 
   return (
     <div style={{ borderTop: "1px solid var(--p-color-border, #e1e3e5)", padding: "12px 0", marginTop: 16 }}>
@@ -270,57 +253,54 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   );
 }
 
-/* ---------- Section & Skeleton ---------- */
+/* ---------- Section ---------- */
 function Section({ title, source, pool, visible, products, saver }) {
   const initialSelected = useMemo(() => {
     const m = new Map();
-    (visible || []).forEach((v) => m.set(String(v.id), v));
+    (visible || []).forEach((v) => m.set(v.id, v));
     return m;
   }, [visible]);
 
   const [selected, setSelected] = useState(initialSelected);
-
-  // 🔄 当 visible（文件内容）变化时，同步到 selected，避免“保存后 UI 反显不一致”
-  useEffect(() => {
-    const m = new Map();
-    (visible || []).forEach((v) => m.set(String(v.id), v));
-    setSelected(m);
-  }, [visible]);
+  const opRef = useRef(null);
 
   const toggle = (id, seed) =>
     setSelected((prev) => {
-      const key = String(id);
       const n = new Map(prev);
-      if (n.has(key)) n.delete(key);
-      else n.set(key, seedToVisible(seed));
+      if (n.has(id)) n.delete(id);
+      else n.set(id, seedToVisible(seed));
       return n;
     });
 
   const changeCategory = (id, category) =>
     setSelected((prev) => {
-      const key = String(id);
       const n = new Map(prev);
-      if (n.has(key)) n.get(key).category = category;
+      if (n.has(id)) n.get(id).category = category;
       return n;
     });
 
   const changeProducts = (id, handle) =>
     setSelected((prev) => {
-      const key = String(id);
       const n = new Map(prev);
-      if (n.has(key)) n.get(key).products = handle ? [handle] : [];
+      if (n.has(id)) n.get(id).products = handle ? [handle] : [];
       return n;
     });
 
   return (
     <saver.Form method="post">
       <input type="hidden" name="source" value={source} />
-      {/* 默认合并写入，避免覆盖其他页已选择的数据 */}
-      <input type="hidden" name="mode" value="merge" />
+      <input ref={opRef} type="hidden" name="op" value="saveVisible" />
 
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h2" variant="headingLg">{title}</Text>
-        <Button submit primary>Save visible list (mentions)</Button>
+        <InlineStack gap="200">
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "saveVisible"; }} primary>
+            Save visible list (mentions)
+          </Button>
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisible"; }}>
+            Refresh media URL (checked)
+          </Button>
+        </InlineStack>
       </InlineStack>
 
       <div
@@ -332,32 +312,27 @@ function Section({ title, source, pool, visible, products, saver }) {
         }}
       >
         {pool.map((item) => {
-          const key = String(item.id);
           const isVideo = item.media_type === "VIDEO";
-          const picked = selected.get(key);
+          const picked = selected.get(item.id);
           const isChecked = !!picked;
           const category = picked?.category || "camping";
           const chosenProducts = picked?.products || [];
           const thumb = item.thumbnail_url || item.media_url || TINY;
 
           return (
-            <Card key={`tag-${key}`} padding="400">
+            <Card key={`tag-${item.id}`} padding="400">
               <BlockStack gap="200">
                 <InlineStack gap="200" blockAlign="center">
-                  <Tag>@mention</Tag>
+                  <Tag>@{item.username || "author"}</Tag>
                   <Text as="span" variant="bodySm" tone="subdued">
                     {item.timestamp ? new Date(item.timestamp).toLocaleString() : ""}
                   </Text>
-                  {item.username && <Text as="span" variant="bodySm" tone="subdued">@{item.username}</Text>}
                 </InlineStack>
 
                 <a href={item.permalink} target="_blank" rel="noreferrer">
                   {isVideo ? (
                     <video
-                      controls
-                      muted
-                      preload="metadata"
-                      playsInline
+                      controls muted preload="metadata" playsInline
                       style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
                     >
                       <source src={item.media_url || ""} type="video/mp4" />
@@ -380,7 +355,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                   {item.caption && item.caption.length > 160 ? "…" : ""}
                 </Text>
 
-                <Checkbox label="Show on site" checked={isChecked} onChange={() => toggle(key, item)} />
+                <Checkbox label="Show on site" checked={isChecked} onChange={() => toggle(item.id, item)} />
 
                 {isChecked && (
                   <>
@@ -388,19 +363,19 @@ function Section({ title, source, pool, visible, products, saver }) {
                       label="Category"
                       options={CATEGORY_OPTIONS}
                       value={category}
-                      onChange={(v) => changeCategory(key, v)}
+                      onChange={(v) => changeCategory(item.id, v)}
                     />
                     <Select
                       label="Linked Product"
                       options={products.map((p) => ({ label: p.title, value: p.handle }))}
                       value={chosenProducts[0] || ""}
-                      onChange={(v) => changeProducts(key, v)}
+                      onChange={(v) => changeProducts(item.id, v)}
                     />
                     <input
                       type="hidden"
                       name="ugc_entry"
                       value={JSON.stringify({
-                        id: key,
+                        id: item.id,
                         category,
                         products: chosenProducts,
                         username: item.username,
@@ -423,6 +398,7 @@ function Section({ title, source, pool, visible, products, saver }) {
   );
 }
 
+/* ---------- Skeleton ---------- */
 function GridSkeleton() {
   return (
     <div
@@ -445,12 +421,12 @@ function GridSkeleton() {
   );
 }
 
-/* ---------- Helpers ---------- */
+/* ---------- helpers ---------- */
 function seedToVisible(seed) {
   return {
     category: "camping",
     products: [],
-    id: String(seed.id),
+    id: seed.id,
     username: seed.username || "",
     timestamp: seed.timestamp || "",
     media_type: seed.media_type || "IMAGE",

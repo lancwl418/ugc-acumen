@@ -1,11 +1,7 @@
 // app/routes/api-tag-ugc.jsx
 import { json } from "@remix-run/node";
 import fs from "fs/promises";
-import {
-  VISIBLE_TAG_PATH,
-  ensureVisibleTagFile,
-} from "../lib/persistPaths.js";
-import { resolveManyTag } from "../lib/ugcResolverTag.server.js";
+import { VISIBLE_TAG_PATH, ensureVisibleTagFile } from "../lib/persistPaths.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -24,27 +20,25 @@ async function readVisible() {
 }
 
 export async function loader({ request }) {
-  if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
-
+  if (request.method === "OPTIONS") {
+    return new Response(null, { headers: CORS });
+  }
   const url = new URL(request.url);
-  const category = url.searchParams.get("category");
+  const filterCategory = url.searchParams.get("category");
   const limit  = Number(url.searchParams.get("limit") || 0);
   const offset = Number(url.searchParams.get("offset") || 0);
 
-  // 1) Admin 勾选清单（按分类）
   const all = await readVisible();
-  let list = category ? all.filter(v => v.category === category) : all.slice();
+  let list = filterCategory ? all.filter(v => v.category === filterCategory) : all.slice();
   const total = list.length;
+
   if (limit > 0) list = list.slice(offset, offset + limit);
 
-  // 2) 统一三重兜底：Graph(mentioned_media.media_id) → oEmbed → Admin
-  const media = await resolveManyTag(list, 5);
-
-  // 3) 时间降序
-  media.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+  // 时间降序
+  list.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
 
   return json(
-    { media, total, page: { limit, offset, returned: media.length } },
+    { media: list, total, page: { limit, offset, returned: list.length } },
     { headers: { ...CORS, "Cache-Control": "public, max-age=60" } }
   );
 }
