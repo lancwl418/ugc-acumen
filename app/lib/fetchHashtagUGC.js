@@ -2,9 +2,9 @@
 import fetch from "node-fetch";
 
 /** 环境变量 */
-const IG_ID      = process.env.INSTAGRAM_IG_ID || "";     // 你的 IG Business 用户ID（数字）
-const PAGE_TOKEN = process.env.PAGE_TOKEN || "";          // hashtag edges
-const USER_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN || ""; // /tags & mentioned_media
+const IG_ID      = process.env.INSTAGRAM_IG_ID || "";         // IG Business 用户ID（数字）
+const PAGE_TOKEN = process.env.PAGE_TOKEN || "";               // hashtag edges
+const USER_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN || "";   // /tags & mentioned_media
 const APP_ID     = process.env.META_APP_ID || "";
 const APP_SECRET = process.env.META_APP_SECRET || "";
 const OEMBED     = (APP_ID && APP_SECRET) ? `${APP_ID}|${APP_SECRET}` : "";
@@ -136,13 +136,24 @@ export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
 }
 
 /* ==================================================================== */
-/* ========== 新增：按 /tags 翻页匹配刷新指定条目的 media_url ========= */
+/* ========== 新：/tags 单条刷新 —— 扫到命中为止 ===================== */
 /* ==================================================================== */
-export async function refreshMediaUrlByTag(entry, { per = 50, maxPages = 3 } = {}) {
-  if (!IG_ID || !USER_TOKEN) return entry;
+export async function refreshMediaUrlByTag(entry, {
+  per = 50,              // 每页条数（IG 通常 50 比较稳）
+  maxScan = 5000,        // 最多扫描多少条，防止极端情况
+  hardPageCap = 200,     // 硬性最多翻多少页，双保险
+  retry = 3,             // 瞬时错误重试
+  retryBaseMs = 500,     // 重试的基础退避
+} = {}) {
+  if (!IG_ID || !USER_TOKEN || !entry || !entry.id) return entry;
 
   let after = "";
-  for (let i = 0; i < maxPages; i++) {
+  let scanned = 0;
+  let pageCount = 0;
+
+  while (true) {
+    if (scanned >= maxScan || pageCount >= hardPageCap) break;
+
     const u = new URL(`https://graph.facebook.com/v23.0/${IG_ID}/tags`);
     u.searchParams.set(
       "fields",
@@ -152,11 +163,29 @@ export async function refreshMediaUrlByTag(entry, { per = 50, maxPages = 3 } = {
     if (after) u.searchParams.set("after", after);
     u.searchParams.set("access_token", USER_TOKEN);
 
-    const r = await withLimit(() => fetch(u));
-    const j = await r.json();
-    if (!r.ok || j?.error) break;
+    let r, j;
+    for (let k = 0; k <= retry; k++) {
+      r = await withLimit(() => fetch(u));
+      j = await r.json();
+      const transient =
+        j?.error?.code === 4 || // rate limit
+        j?.error?.code === 17 || // user request limit
+        j?.error?.code === 32 || // read-only mode
+        r.status >= 500;         // server error
+      if (r.ok && !j?.error) break;
+      if (k < retry && transient) {
+        const backoff = retryBaseMs * Math.pow(2, k);
+        await new Promise((res) => setTimeout(res, backoff));
+        continue;
+      }
+      return entry; // 非瞬时或最终失败：保持原样
+    }
 
-    const hit = (j.data || []).find(m => String(m.id) === String(entry.id));
+    const data = Array.isArray(j?.data) ? j.data : [];
+    scanned += data.length;
+    pageCount++;
+
+    const hit = data.find((m) => String(m.id) === String(entry.id));
     if (hit) {
       if (hit.media_type === "CAROUSEL_ALBUM" && hit.children?.data?.length) {
         const f = hit.children.data[0];
@@ -175,19 +204,23 @@ export async function refreshMediaUrlByTag(entry, { per = 50, maxPages = 3 } = {
         permalink:     hit.permalink || entry.permalink,
         timestamp:     hit.timestamp || entry.timestamp,
         username:      hit.username  || entry.username,
+        __refreshedBy: "tags",
       };
     }
 
     after = j?.paging?.cursors?.after || "";
     if (!after) break;
   }
-  return entry;
+
+  return entry; // 没命中则保持原样
 }
 
 /* ==================================================================== */
 /* ========== Hashtag：按 hashtag 扫描刷新指定条目（保留） ============ */
 /* ==================================================================== */
-export async function refreshMediaUrlByHashtag(entry, { per = 30, maxPages = 3 } = {}) {
+export async function refreshMediaUrlByHashtag(entry, {
+  per = 30, maxScan = 3000, hardPageCap = 200
+} = {}) {
   const tag = String(entry?.hashtag || "").replace(/^#/, "");
   if (!tag) return entry;
 
@@ -196,8 +229,13 @@ export async function refreshMediaUrlByHashtag(entry, { per = 30, maxPages = 3 }
 
   async function search(edge) {
     let after = "";
-    for (let i = 0; i < maxPages; i++) {
+    let scanned = 0;
+    let pages = 0;
+    while (scanned < maxScan && pages < hardPageCap) {
       const p = await edgePage({ hashtagId: hid, edge, limit: per, after });
+      scanned += (p.items || []).length;
+      pages++;
+
       const hit = (p.items || []).find((x) => String(x.id) === String(entry.id));
       if (hit) {
         return {
@@ -226,10 +264,10 @@ export async function fillMissingMediaOnce(entry, { source="hashtag" } = {}) {
   if (entry.media_url || entry.thumbnail_url) return entry;
   try {
     if (source === "hashtag") {
-      const refreshed = await refreshMediaUrlByHashtag(entry, { per: 30, maxPages: 2 });
+      const refreshed = await refreshMediaUrlByHashtag(entry, { per: 30, maxScan: 3000, hardPageCap: 200 });
       return refreshed || entry;
     } else {
-      const refreshed = await refreshMediaUrlByTag(entry, { per: 50, maxPages: 3 });
+      const refreshed = await refreshMediaUrlByTag(entry, { per: 50, maxScan: 5000, hardPageCap: 200 });
       return refreshed || entry;
     }
   } catch { return entry; }
@@ -289,4 +327,86 @@ export async function fetchInstagramByPermalink(permalink) {
       hashtag: "",
     };
   });
+}
+
+/* ==================================================================== */
+/* ========== 新：一次扫描 /tags，直到命中所有 targetIds 即停 ========= */
+/* ==================================================================== */
+export async function scanTagsUntil({
+  targetIds,              // Set<string> or string[]
+  per = 50,               // 每页条数
+  maxScan = 10000,        // 最多扫描多少条
+  hardPageCap = 300,      // 最多翻多少页
+  retry = 3,              // 瞬时错误重试
+  retryBaseMs = 500,      // 重试基础退避
+} = {}) {
+  if (!IG_ID || !USER_TOKEN) return { hits: new Map(), scanned: 0, pages: 0, done: true };
+
+  const goals = new Set(Array.isArray(targetIds) ? targetIds.map(String) : Array.from(targetIds).map(String));
+  const hits = new Map(); // id -> mediaObject
+  let after = "";
+  let scanned = 0;
+  let pages = 0;
+
+  while (goals.size > 0 && scanned < maxScan && pages < hardPageCap) {
+    const u = new URL(`https://graph.facebook.com/v23.0/${IG_ID}/tags`);
+    u.searchParams.set(
+      "fields",
+      "id,media_type,media_url,thumbnail_url,caption,permalink,timestamp,username,children{media_type,media_url,thumbnail_url}"
+    );
+    u.searchParams.set("limit", String(per));
+    if (after) u.searchParams.set("after", after);
+    u.searchParams.set("access_token", USER_TOKEN);
+
+    let r, j;
+    for (let k = 0; k <= retry; k++) {
+      r = await withLimit(() => fetch(u));
+      j = await r.json();
+      const transient = j?.error?.code === 4 || j?.error?.code === 17 || j?.error?.code === 32 || r.status >= 500;
+      if (r.ok && !j?.error) break;
+      if (k < retry && transient) {
+        await new Promise(res => setTimeout(res, retryBaseMs * Math.pow(2, k)));
+        continue;
+      }
+      return { hits, scanned, pages, done: false, error: j?.error || { status: r.status } };
+    }
+
+    const data = Array.isArray(j?.data) ? j.data : [];
+    scanned += data.length;
+    pages++;
+
+    for (const m of data) {
+      const id = String(m.id || "");
+      if (!goals.has(id)) continue;
+
+      // 轮播兜底：取第一帧
+      if (m.media_type === "CAROUSEL_ALBUM" && m.children?.data?.length) {
+        const f = m.children.data[0];
+        m.media_type    = f.media_type || m.media_type;
+        m.media_url     = f.media_url  || m.media_url;
+        m.thumbnail_url = f.thumbnail_url || m.thumbnail_url || m.media_url;
+      }
+
+      hits.set(id, {
+        id,
+        media_type: m.media_type,
+        media_url: m.media_url || m.thumbnail_url || "",
+        thumbnail_url: m.thumbnail_url || null,
+        caption: m.caption || "",
+        permalink: m.permalink || "",
+        timestamp: m.timestamp || "",
+        username: m.username || "",
+      });
+
+      goals.delete(id);
+      if (goals.size === 0) break; // ✅ 所有目标已命中，提前结束
+    }
+
+    if (goals.size === 0) break;
+    after = j?.paging?.cursors?.after || "";
+    if (!after) break; // 没有下一页了
+  }
+
+  const done = goals.size === 0 || !after;
+  return { hits, scanned, pages, done };
 }

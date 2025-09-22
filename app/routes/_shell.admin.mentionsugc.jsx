@@ -31,6 +31,7 @@ import {
 import {
   fetchTagUGCPage,
   refreshMediaUrlByTag,
+  scanTagsUntil, // ✅ 新增导入
 } from "../lib/fetchHashtagUGC.js";
 
 const CATEGORY_OPTIONS = [
@@ -89,7 +90,66 @@ export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
 
-  // 刷新选中：通过 /{IG_ID}/tags 匹配更新并写回 visible
+  // ✅ 一键刷新所有 visible（一次扫描，命中全部即停）
+  if (op === "refreshVisibleAll") {
+    await ensureVisibleTagFile();
+    let visible = [];
+    try { visible = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || []; } catch {}
+
+    const targetIds = visible.map(v => String(v.id));
+    const nowISO = new Date().toISOString();
+
+    const { hits, scanned, pages, done } = await scanTagsUntil({
+      targetIds,
+      per: 50,
+      maxScan: 10000,
+      hardPageCap: 300,
+    });
+
+    const merged = visible.map(v => {
+      const hit = hits.get(String(v.id));
+      if (!hit) {
+        return { ...v, lastRefreshedAt: nowISO, lastRefreshError: v.lastRefreshError ?? null };
+      }
+      const changed =
+        (hit.media_url && hit.media_url !== v.media_url) ||
+        (hit.thumbnail_url && hit.thumbnail_url !== v.thumbnail_url) ||
+        (hit.media_type && hit.media_type !== v.media_type);
+
+      return {
+        ...v,
+        media_type:    hit.media_type || v.media_type,
+        media_url:     hit.media_url  || v.media_url,
+        thumbnail_url: hit.thumbnail_url ?? v.thumbnail_url ?? null,
+        caption:       hit.caption ?? v.caption,
+        permalink:     hit.permalink || v.permalink,
+        timestamp:     hit.timestamp || v.timestamp,
+        username:      hit.username  || v.username,
+        lastRefreshedAt: nowISO,
+        ...(changed ? { lastFoundAt: nowISO } : {}),
+        lastRefreshError: null,
+      };
+    });
+
+    await fs.writeFile(VISIBLE_TAG_PATH, JSON.stringify(merged, null, 2), "utf-8");
+
+    const updatedCount = merged.reduce((n, m, i) => {
+      const old = visible[i] || {};
+      return n + ((m.media_url !== old.media_url) || (m.thumbnail_url !== old.thumbnail_url) ? 1 : 0);
+    }, 0);
+
+    return json({
+      ok: true,
+      op: "refreshVisibleAll",
+      total: merged.length,
+      updated: updatedCount,
+      scanned,
+      pages,
+      done, // true 表示已把可翻页范围扫完或已全部命中
+    });
+  }
+
+  // ✅ 刷新“勾选的” visible（逐条：各自扫到命中为止）
   if (op === "refreshVisible") {
     const picked = fd.getAll("ugc_entry").map((s) => JSON.parse(s));
     const idSet = new Set(picked.map((e) => String(e.id)));
@@ -103,10 +163,12 @@ export async function action({ request }) {
     for (const v of visible) {
       if (!idSet.has(String(v.id))) { updated.push(v); continue; }
       try {
-        const fresh = await refreshMediaUrlByTag(v, { per: 50, maxPages: 3 });
-        updated.push({ ...fresh, lastRefreshedAt: nowISO });
+        const fresh = await refreshMediaUrlByTag(v, { per: 50, maxScan: 5000, hardPageCap: 200 });
+        const found = (fresh.media_url && fresh.media_url !== v.media_url) ||
+                      (fresh.thumbnail_url && fresh.thumbnail_url !== v.thumbnail_url);
+        updated.push({ ...fresh, lastRefreshedAt: nowISO, ...(found ? { lastFoundAt: nowISO } : {}) });
       } catch {
-        updated.push({ ...v, lastRefreshedAt: nowISO });
+        updated.push({ ...v, lastRefreshedAt: nowISO, lastRefreshError: "fetch_failed" });
       }
     }
 
@@ -159,7 +221,6 @@ export async function action({ request }) {
 export default function AdminMentionsUGC() {
   const data = useLoaderData(); // { tag: Promise, visible, products }
   const saver = useFetcher();
-  const refresher = useFetcher();
   const navigation = useNavigation();
 
   return (
@@ -299,6 +360,10 @@ function Section({ title, source, pool, visible, products, saver }) {
           </Button>
           <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisible"; }}>
             Refresh media URL (checked)
+          </Button>
+          {/* ✅ 新增：一键刷新全部 */}
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisibleAll"; }}>
+            Refresh ALL visible
           </Button>
         </InlineStack>
       </InlineStack>
