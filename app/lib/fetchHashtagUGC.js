@@ -410,3 +410,69 @@ export async function scanTagsUntil({
   const done = goals.size === 0 || !after;
   return { hits, scanned, pages, done };
 }
+
+/* ==================================================================== */
+/* ========== 新：批量扫描 hashtags，命中所有 targetIds 即停 ========= */
+/* ==================================================================== */
+export async function scanHashtagsUntil({
+  tags = DEFAULT_TAGS,               // string 或 string[]
+  targetIds,                         // Set<string> / string[]
+  per = 50,                          // 每页条数
+  maxScanPerTagPerEdge = 6000,       // 单 tag 单 edge 最大扫描条数
+  hardPageCapPerTagPerEdge = 200,    // 单 tag 单 edge 最大翻页数
+} = {}) {
+  const tagList = Array.isArray(tags) ? tags : parseTags(tags);
+  const goals = new Set(Array.isArray(targetIds) ? targetIds.map(String) : Array.from(targetIds).map(String));
+  const hits = new Map(); // id -> mediaObject
+
+  if (!IG_ID || !PAGE_TOKEN || !tagList.length) {
+    return { hits, done: goals.size === 0, scanned: 0, pages: 0 };
+  }
+
+  let scanned = 0, pages = 0;
+
+  const ids = await Promise.all(tagList.map(getHashtagId));
+  const pairs = tagList.map((t,i)=>({tag:t,id:ids[i]})).filter(p=>p.id);
+
+  // 逐个 hashtag：先 top_media，再 recent_media；随时命中完就提前退出
+  for (const {tag, id: hid} of pairs) {
+    for (const edge of ["top_media", "recent_media"]) {
+      let after = "", localScanned = 0, localPages = 0;
+
+      while (goals.size > 0 && localScanned < maxScanPerTagPerEdge && localPages < hardPageCapPerTagPerEdge) {
+        const p = await edgePage({ hashtagId: hid, edge, limit: per, after });
+        const data = p.items || [];
+        localScanned += data.length; localPages++;
+        scanned += data.length; pages++;
+
+        for (const m of data) {
+          const id = String(m.id || "");
+          if (!goals.has(id)) continue;
+
+          hits.set(id, {
+            id,
+            media_type: m.media_type,
+            media_url: m.media_url || "",
+            thumbnail_url: null,
+            caption: m.caption || "",
+            permalink: m.permalink || "",
+            timestamp: m.timestamp || "",
+            username: m.username || "",
+          });
+
+          goals.delete(id);
+          if (goals.size === 0) break;
+        }
+
+        if (goals.size === 0) break;
+        after = p.nextAfter || "";
+        if (!after) break;
+      }
+
+      if (goals.size === 0) break;
+    }
+    if (goals.size === 0) break;
+  }
+
+  return { hits, done: goals.size === 0, scanned, pages };
+}

@@ -25,18 +25,16 @@ import fs from "fs/promises";
 import path from "path";
 
 import {
-  VISIBLE_HASHTAG_PATH,
-  ensureVisibleHashtagFile,
-  // ✅ 新增：原子写入
-  writeVisibleHashtagAtomic,
+  VISIBLE_HASH_PATH,
+  ensureVisibleHashFile,
 } from "../lib/persistPaths.js";
+
 import {
   fetchHashtagUGCPage,
-  fillMissingMediaOnce,
+  refreshMediaUrlByHashtag,
+  scanHashtagsUntil,
 } from "../lib/fetchHashtagUGC.js";
-import { memo } from "../lib/memo.js";
 
-/* ---------- Constants ---------- */
 const CATEGORY_OPTIONS = [
   { label: "Camping Life", value: "camping" },
   { label: "Off-Road", value: "off-road" },
@@ -48,152 +46,155 @@ const CATEGORY_OPTIONS = [
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
-/* ---------- Utils ---------- */
+/* ---------- utils ---------- */
 async function readJsonSafe(file, fallback = "[]") {
-  try {
-    return JSON.parse((await fs.readFile(file, "utf-8")) || fallback);
-  } catch {
-    return JSON.parse(fallback);
-  }
+  try { return JSON.parse((await fs.readFile(file, "utf-8")) || fallback); }
+  catch { return JSON.parse(fallback); }
 }
+function b64e(obj){ return Buffer.from(JSON.stringify(obj||{}), "utf-8").toString("base64url"); }
+function b64d(s){ try{ return JSON.parse(Buffer.from(String(s||""), "base64url").toString("utf-8")||"{}"); }catch{ return {}; } }
 function readStackSS(key) {
-  try {
-    const raw = sessionStorage.getItem(key);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+  try { const raw = sessionStorage.getItem(key); return raw ? JSON.parse(raw) : []; }
+  catch { return []; }
 }
 function writeStackSS(key, arr) {
-  try {
-    sessionStorage.setItem(key, JSON.stringify(arr));
-  } catch {}
+  try { sessionStorage.setItem(key, JSON.stringify(arr)); } catch {}
 }
 
-/* ---------- Loader: use defer so route switches immediately ---------- */
+/* ---------- loader ---------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
-
+  const tags = url.searchParams.get("tags") || ""; // 逗号分隔
   const hSize = Math.min(40, Math.max(6, Number(url.searchParams.get("hSize") || 12)));
-  const hCursorB64 = url.searchParams.get("hCursor") || "";
-  let hCursors = {};
-  try {
-    if (hCursorB64) {
-      hCursors = JSON.parse(Buffer.from(hCursorB64, "base64").toString("utf-8"));
-    }
-  } catch {}
+  const c = url.searchParams.get("c") || "";       // base64 的 per-tag cursors
 
-  await ensureVisibleHashtagFile();
-  const [hashtagVisible, products] = await Promise.all([
-    readJsonSafe(VISIBLE_HASHTAG_PATH),
+  await ensureVisibleHashFile();
+  const [hashVisible, products] = await Promise.all([
+    readJsonSafe(VISIBLE_HASH_PATH),
     readJsonSafe(path.resolve("public/products.json"), "[]"),
   ]);
 
+  const cursors = c ? b64d(c) : {};
   const hashtagPromise = (async () => {
-    const hPage = await memo(
-      `h:${hSize}:${Buffer.from(JSON.stringify(hCursors), "utf-8").toString("base64")}`,
-      30_000,
-      () => fetchHashtagUGCPage({ limit: hSize, cursors: hCursors })
-    ).catch(() => ({ items: [], nextCursors: {} }));
-
-    const items = await Promise.all(
-      (hPage.items || []).map((it) =>
-        it.media_url || it.thumbnail_url ? it : fillMissingMediaOnce(it, { source: "hashtag" })
-      )
-    );
-
-    return {
-      items,
-      nextCursorB64: Buffer.from(JSON.stringify(hPage.nextCursors || {}), "utf-8").toString("base64"),
-      pageSize: hSize,
-    };
+    try {
+      const page = await fetchHashtagUGCPage({ tags, limit: hSize, cursors });
+      return { items: page.items || [], nextCursors: page.nextCursors || {}, pageSize: hSize, tags };
+    } catch {
+      return { items: [], nextCursors: {}, pageSize: hSize, tags };
+    }
   })();
 
   return defer(
-    {
-      hashtag: hashtagPromise,   // Promise
-      visible: hashtagVisible,   // small data first
-      products,
-    },
+    { hashtag: hashtagPromise, visible: hashVisible, products },
     { headers: { "Cache-Control": "private, max-age=30" } }
   );
 }
 
-/* ---------- Action: 合并写入（支持 mode=replace 覆盖），刷新打上时间戳 ---------- */
+/* ---------- action ---------- */
 export async function action({ request }) {
   const fd = await request.formData();
-  const op = String(fd.get("op") || "").trim(); // "refresh" | "refreshVisible" | "saveVisible"
-  const nowISO = new Date().toISOString();
+  const op = fd.get("op");
 
-  // 1) 刷新池子：保持原样
-  if (op === "refresh") {
-    try { await fetchHashtagUGCPage({ limit: 6 }); } catch {}
-    return json({ ok: true });
+  // 一键刷新所有 visible（扫描 hashtags，命中全部即停）
+  if (op === "refreshVisibleAll") {
+    await ensureVisibleHashFile();
+    let visible = [];
+    try { visible = JSON.parse(await fs.readFile(VISIBLE_HASH_PATH, "utf-8")) || []; } catch {}
+
+    // 目标 id 集合 & 参与扫描的 hashtags（来自 visible 中的 hashtag 字段）
+    const targetIds = visible.map(v => String(v.id));
+    const tagSet = new Set(
+      visible.map(v => String(v.hashtag || "").replace(/^#/, "")).filter(Boolean)
+    );
+    const tags = Array.from(tagSet).join(",");
+
+    const nowISO = new Date().toISOString();
+    const { hits, scanned, pages, done } = await scanHashtagsUntil({
+      tags,
+      targetIds,
+      per: 50,
+      maxScanPerTagPerEdge: 6000,
+      hardPageCapPerTagPerEdge: 200,
+    });
+
+    const merged = visible.map(v => {
+      const hit = hits.get(String(v.id));
+      if (!hit) {
+        return { ...v, lastRefreshedAt: nowISO, lastRefreshError: v.lastRefreshError ?? null };
+      }
+      const changed =
+        (hit.media_url && hit.media_url !== v.media_url) ||
+        (hit.thumbnail_url && hit.thumbnail_url !== v.thumbnail_url) ||
+        (hit.media_type && hit.media_type !== v.media_type);
+
+      return {
+        ...v,
+        media_type:    hit.media_type || v.media_type,
+        media_url:     hit.media_url  || v.media_url,
+        thumbnail_url: hit.thumbnail_url ?? v.thumbnail_url ?? null,
+        caption:       hit.caption ?? v.caption,
+        permalink:     hit.permalink || v.permalink,
+        timestamp:     hit.timestamp || v.timestamp,
+        username:      hit.username  || v.username,
+        lastRefreshedAt: nowISO,
+        ...(changed ? { lastFoundAt: nowISO } : {}),
+        lastRefreshError: null,
+      };
+    });
+
+    await fs.writeFile(VISIBLE_HASH_PATH, JSON.stringify(merged, null, 2), "utf-8");
+
+    const updatedCount = merged.reduce((n, m, i) => {
+      const old = visible[i] || {};
+      return n + ((m.media_url !== old.media_url) || (m.thumbnail_url !== old.thumbnail_url) ? 1 : 0);
+    }, 0);
+
+    return json({
+      ok: true,
+      op: "refreshVisibleAll",
+      total: merged.length,
+      updated: updatedCount,
+      scanned,
+      pages,
+      done,
+      tagsUsed: tags,
+    });
   }
 
-  // 2) 刷新已勾选项：根据 hashtag 扫描，回写最新 media_url + lastRefreshedAt
+  // 刷新“勾选的” visible（逐条：各自扫到命中为止）
   if (op === "refreshVisible") {
     const picked = fd.getAll("ugc_entry").map((s) => JSON.parse(s));
     const idSet = new Set(picked.map((e) => String(e.id)));
 
-    await ensureVisibleHashtagFile();
+    await ensureVisibleHashFile();
     let visible = [];
-    try {
-      visible = JSON.parse(await fs.readFile(VISIBLE_HASHTAG_PATH, "utf-8")) || [];
-    } catch { visible = []; }
+    try { visible = JSON.parse(await fs.readFile(VISIBLE_HASH_PATH, "utf-8")) || []; } catch {}
 
-    const per = Number(fd.get("per") || 30);
-    const maxPages = Number(fd.get("maxPages") || 3);
-
+    const nowISO = new Date().toISOString();
     const updated = [];
     for (const v of visible) {
-      if (idSet.has(String(v.id))) {
-        try {
-          // 通过 hashtag edges(top_media→recent_media) 找回“当下最新”直链
-          const fresh = await refreshMediaUrlByHashtag(v, { per, maxPages });
-          updated.push({
-            ...v,
-            media_url: fresh?.media_url || v.media_url || "",
-            thumbnail_url: fresh?.thumbnail_url ?? v.thumbnail_url ?? null,
-            media_type: fresh?.media_type || v.media_type || "IMAGE",
-            permalink: fresh?.permalink || v.permalink || "",
-            username: fresh?.username || v.username || "",
-            timestamp: fresh?.timestamp || v.timestamp || "",
-            // ✅ 标记这条被刷新过
-            lastRefreshedAt: nowISO,
-          });
-        } catch {
-          // 单条失败不中断，至少更新时间戳，方便你看 visible 是否被触发刷新
-          updated.push({
-            ...v,
-            lastRefreshedAt: nowISO,
-          });
-        }
-      } else {
-        updated.push(v);
+      if (!idSet.has(String(v.id))) { updated.push(v); continue; }
+      try {
+        const fresh = await refreshMediaUrlByHashtag(v, { per: 50, maxScan: 6000, hardPageCap: 200 });
+        const found = (fresh.media_url && fresh.media_url !== v.media_url) ||
+                      (fresh.thumbnail_url && fresh.thumbnail_url !== v.thumbnail_url);
+        updated.push({ ...fresh, lastRefreshedAt: nowISO, ...(found ? { lastFoundAt: nowISO } : {}) });
+      } catch {
+        updated.push({ ...v, lastRefreshedAt: nowISO, lastRefreshError: "fetch_failed" });
       }
     }
 
-    // ✅ 原子写入
-    await writeVisibleHashtagAtomic(updated);
-    return json({
-      ok: true,
-      op: "refreshVisible",
-      refreshed: idSet.size,
-      total: updated.length,
-      // 也回传一个时间给前端日志用
-      lastRefreshedAt: nowISO,
-    });
+    await fs.writeFile(VISIBLE_HASH_PATH, JSON.stringify(updated, null, 2), "utf-8");
+    return json({ ok: true, op: "refreshVisible", refreshed: idSet.size, total: updated.length });
   }
 
-  // 3) 保存可见列表（replace | merge），op 由前端传 "saveVisible"
+  // 保存可见列表（merge | replace）
   const mode = String(fd.get("mode") || "merge").toLowerCase();
 
   const entries = fd.getAll("ugc_entry").map((s) => {
     const e = JSON.parse(s);
     return {
       id: String(e.id),
-      hashtag: e.hashtag || "",            // ✅ 保留 hashtag
       category: e.category || "camping",
       products: Array.isArray(e.products) ? e.products : [],
       username: e.username || "",
@@ -203,54 +204,43 @@ export async function action({ request }) {
       thumbnail_url: e.thumbnail_url || "",
       caption: e.caption || "",
       permalink: e.permalink || "",
-      // 可选：记录这条是何时保存/更新进 visible 的
-      savedAt: nowISO,
+      hashtag: String(e.hashtag || "").replace(/^#/, ""), // ✅ 关键：保存 hashtag，供刷新定位
     };
   });
 
-  await ensureVisibleHashtagFile();
+  await ensureVisibleHashFile();
 
   if (mode === "replace") {
-    // ✅ 原子写入
-    await writeVisibleHashtagAtomic(entries);
-    return json({ ok: true, op: "saveVisible", mode: "replace", count: entries.length });
+    await fs.writeFile(VISIBLE_HASH_PATH, JSON.stringify(entries, null, 2), "utf-8");
+    return json({ ok: true, mode: "replace", count: entries.length });
   }
 
   // merge（upsert by id）
   let existing = [];
-  try {
-    existing = JSON.parse(await fs.readFile(VISIBLE_HASHTAG_PATH, "utf-8")) || [];
-  } catch { existing = []; }
+  try { existing = JSON.parse(await fs.readFile(VISIBLE_HASH_PATH, "utf-8")) || []; } catch {}
 
   const merged = new Map(existing.map((x) => [String(x.id), x]));
   for (const e of entries) {
     const prev = merged.get(String(e.id)) || {};
-    // 用新值覆盖旧值，同时保留旧值里可能存在但新值没有的字段（如 lastRefreshedAt）
-    merged.set(String(e.id), { ...prev, ...e, id: String(e.id) });
+    merged.set(String(e.id), { ...prev, ...e });
   }
 
   const toWrite = Array.from(merged.values());
-  // ✅ 原子写入
-  await writeVisibleHashtagAtomic(toWrite);
-  return json({ ok: true, op: "saveVisible", mode: "merge", count: entries.length, total: toWrite.length });
+  await fs.writeFile(VISIBLE_HASH_PATH, JSON.stringify(toWrite, null, 2), "utf-8");
+  return json({ ok: true, mode: "merge", count: entries.length, total: toWrite.length });
 }
 
-
-/* ---------- Page ---------- */
+/* ---------- page ---------- */
 export default function AdminHashtagUGC() {
   const data = useLoaderData(); // { hashtag: Promise, visible, products }
   const saver = useFetcher();
-  const refresher = useFetcher();
   const navigation = useNavigation();
 
   return (
     <Page>
       <InlineStack align="space-between" blockAlign="center">
-        <Text as="h1" variant="headingLg">UGC Admin — Hashtags (#)</Text>
-        <refresher.Form method="post">
-          <input type="hidden" name="op" value="refresh" />
-          <Button submit loading={refresher.state !== "idle"}>Refresh Hashtag Pool</Button>
-        </refresher.Form>
+        <Text as="h1" variant="headingLg">UGC Admin — Hashtags</Text>
+        <Text as="span" tone="subdued">前端只读 visible_hashtag_ugc.json</Text>
       </InlineStack>
 
       <div style={{ display: "flex", flexDirection: "column", minHeight: "calc(100vh - 120px)", marginTop: 16 }}>
@@ -259,10 +249,10 @@ export default function AdminHashtagUGC() {
             <Await resolve={data.hashtag}>
               {(h) => (
                 <>
-                  <BlockStack gap="400" id="tab-hashtag">
+                  <BlockStack gap="400" id="tab-hashtags">
                     <Section
-                      title="Hashtag (#)"
-                      source="hashtag"
+                      title={`Hashtags (${h.tags || ""})`}
+                      source="hashtags"
                       pool={h.items}
                       visible={data.visible}
                       products={data.products}
@@ -273,7 +263,7 @@ export default function AdminHashtagUGC() {
                   <Pager
                     view={h}
                     routeLoading={navigation.state !== "idle"}
-                    hash="#hashtag"
+                    hash="#hashtags"
                     stackKey="ugc:hStack"
                   />
                 </>
@@ -300,9 +290,9 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     setBusy(true);
     const usp = new URLSearchParams(location.search);
     const stack = readStackSS(stackKey);
-    stack.push(usp.get("hCursor") || "");
+    stack.push(usp.get("c") || "");
     writeStackSS(stackKey, stack);
-    usp.set("hCursor", view.nextCursorB64 || "");
+    usp.set("c", b64e(view.nextCursors || {}));       // ✅ 把 per-tag 游标编码进 URL
     usp.set("hSize", String(view.pageSize || 12));
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
@@ -312,18 +302,16 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     const stack = readStackSS(stackKey);
     if (stack.length === 0) return;
     setBusy(true);
-    const prevCursor = stack.pop() || "";
+    const prevC = stack.pop() || "";
     writeStackSS(stackKey, stack);
     const usp = new URLSearchParams(location.search);
-    if (prevCursor) usp.set("hCursor", prevCursor);
-    else usp.delete("hCursor");
+    if (prevC) usp.set("c", prevC);
+    else usp.delete("c");
     usp.set("hSize", String(view.pageSize || 12));
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
 
-  useEffect(() => {
-    if (navigation.state === "idle") setBusy(false);
-  }, [navigation.state]);
+  useEffect(() => { if (navigation.state === "idle") setBusy(false); }, [navigation.state]);
 
   return (
     <div style={{ borderTop: "1px solid var(--p-color-border, #e1e3e5)", padding: "12px 0", marginTop: 16 }}>
@@ -339,7 +327,7 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   );
 }
 
-/* ---------- Shared Section（同步 visible → selected；默认 merge 保存） ---------- */
+/* ---------- Section ---------- */
 function Section({ title, source, pool, visible, products, saver }) {
   const initialSelected = useMemo(() => {
     const m = new Map();
@@ -348,7 +336,7 @@ function Section({ title, source, pool, visible, products, saver }) {
   }, [visible]);
 
   const [selected, setSelected] = useState(initialSelected);
-  const opRef = useRef(null); // 用于切换 op
+  const opRef = useRef(null);
 
   const toggle = (id, seed) =>
     setSelected((prev) => {
@@ -375,25 +363,19 @@ function Section({ title, source, pool, visible, products, saver }) {
   return (
     <saver.Form method="post">
       <input type="hidden" name="source" value={source} />
-      {/* 默认保存 */}
       <input ref={opRef} type="hidden" name="op" value="saveVisible" />
 
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h2" variant="headingLg">{title}</Text>
-
         <InlineStack gap="200">
-          <Button
-            submit
-            onClick={() => { if (opRef.current) opRef.current.value = "saveVisible"; }}
-            primary
-          >
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "saveVisible"; }} primary>
             Save visible list (hashtags)
           </Button>
-          <Button
-            submit
-            onClick={() => { if (opRef.current) opRef.current.value = "refreshVisible"; }}
-          >
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisible"; }}>
             Refresh media URL (checked)
+          </Button>
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisibleAll"; }}>
+            Refresh ALL visible
           </Button>
         </InlineStack>
       </InlineStack>
@@ -415,23 +397,20 @@ function Section({ title, source, pool, visible, products, saver }) {
           const thumb = item.thumbnail_url || item.media_url || TINY;
 
           return (
-            <Card key={`hashtag-${item.id}`} padding="400">
+            <Card key={`hash-${item.id}`} padding="400">
               <BlockStack gap="200">
                 <InlineStack gap="200" blockAlign="center">
-                  <Tag>#{item.hashtag || "hashtag"}</Tag>
+                  <Tag>#{item.hashtag || "tag"}</Tag>
+                  <Tag>@{item.username || "author"}</Tag>
                   <Text as="span" variant="bodySm" tone="subdued">
                     {item.timestamp ? new Date(item.timestamp).toLocaleString() : ""}
                   </Text>
-                  {item.username && <Text as="span" variant="bodySm" tone="subdued">@{item.username}</Text>}
                 </InlineStack>
 
                 <a href={item.permalink} target="_blank" rel="noreferrer">
                   {isVideo ? (
                     <video
-                      controls
-                      muted
-                      preload="metadata"
-                      playsInline
+                      controls muted preload="metadata" playsInline
                       style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
                     >
                       <source src={item.media_url || ""} type="video/mp4" />
@@ -454,11 +433,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                   {item.caption && item.caption.length > 160 ? "…" : ""}
                 </Text>
 
-                <Checkbox
-                  label="Show on site"
-                  checked={isChecked}
-                  onChange={() => toggle(item.id, item)}
-                />
+                <Checkbox label="Show on site" checked={isChecked} onChange={() => toggle(item.id, item)} />
 
                 {isChecked && (
                   <>
@@ -474,13 +449,12 @@ function Section({ title, source, pool, visible, products, saver }) {
                       value={chosenProducts[0] || ""}
                       onChange={(v) => changeProducts(item.id, v)}
                     />
-                    {/* 勾选才提交；这里带上 hashtag */}
                     <input
                       type="hidden"
                       name="ugc_entry"
                       value={JSON.stringify({
                         id: item.id,
-                        hashtag: item.hashtag || "",
+                        hashtag: item.hashtag,       // ✅ 关键：保存 hashtag
                         category,
                         products: chosenProducts,
                         username: item.username,
@@ -503,8 +477,7 @@ function Section({ title, source, pool, visible, products, saver }) {
   );
 }
 
-
-/* ---------- Skeleton Grid ---------- */
+/* ---------- Skeleton ---------- */
 function GridSkeleton() {
   return (
     <div
@@ -527,13 +500,13 @@ function GridSkeleton() {
   );
 }
 
-/* ---------- Helpers ---------- */
+/* ---------- helpers ---------- */
 function seedToVisible(seed) {
   return {
     category: "camping",
     products: [],
     id: seed.id,
-    hashtag: seed.hashtag || "",   // 关键：保存 hashtag，供刷新时定位
+    hashtag: (seed.hashtag || "").replace(/^#/, ""),
     username: seed.username || "",
     timestamp: seed.timestamp || "",
     media_type: seed.media_type || "IMAGE",
@@ -542,85 +515,4 @@ function seedToVisible(seed) {
     caption: seed.caption || "",
     permalink: seed.permalink || "",
   };
-}
-
-
-/* ---------- 通过 media_id 或 hashtag 重新获取“新鲜”的 media_url ---------- */
-
-// 先尝试用 media_id 直接拉详情（更稳、更快）
-async function getMediaDetail(mediaId) {
-  if (!mediaId) return null;
-  const token = USER_TOKEN || PAGE_TOKEN;
-  if (!token) return null;
-
-  const fields =
-    "id,media_type,media_url,thumbnail_url,caption,username,timestamp,permalink,children{media_type,media_url,thumbnail_url}";
-  const u = new URL(`https://graph.facebook.com/v23.0/${encodeURIComponent(mediaId)}`);
-  u.searchParams.set("fields", fields);
-  u.searchParams.set("access_token", token);
-
-  const r = await withLimit(() => fetch(u));
-  const j = await r.json();
-  if (!r.ok || j?.error) return null;
-
-  let media_type = j.media_type;
-  let media_url = j.media_url || "";
-  let thumbnail_url = j.thumbnail_url || "";
-
-  if (j.media_type === "CAROUSEL_ALBUM" && j.children?.data?.length) {
-    const first = j.children.data[0];
-    media_type = first.media_type || media_type;
-    media_url = first.media_url || media_url;
-    thumbnail_url = first.thumbnail_url || thumbnail_url || media_url;
-  }
-  return { media_type, media_url, thumbnail_url };
-}
-
-/**
- * 根据 visible 里的条目刷新 media_url：
- * 1) 优先用 media_id 直接查详情；
- * 2) 不行再按 hashtag 的 top_media → recent_media 扫描匹配同 id。
- * @param {object} entry - { id, hashtag, ... }
- * @param {object} opts  - { per=25, maxPages=2 }
- */
-export async function refreshMediaUrlByHashtag(entry, { per = 25, maxPages = 2 } = {}) {
-  const out = { ...entry };
-
-  // 1) 直接用 media_id 拉详情（通常就够了）
-  try {
-    const d = await getMediaDetail(entry.id);
-    if (d && (d.media_url || d.thumbnail_url)) {
-      out.media_type = d.media_type || out.media_type;
-      out.media_url = d.media_url || d.thumbnail_url || out.media_url || "";
-      out.thumbnail_url = d.thumbnail_url || out.thumbnail_url || null;
-      return out;
-    }
-  } catch {}
-
-  // 2) fallback：按 hashtag 扫描
-  const tag = String(entry.hashtag || "").replace(/^#/, "").trim();
-  if (!tag) return out;
-
-  try {
-    const hId = await getHashtagId(tag);
-    if (!hId) return out;
-
-    for (const edge of ["top_media", "recent_media"]) {
-      let after = "";
-      for (let i = 0; i < maxPages; i++) {
-        const page = await edgePage({ hashtagId: hId, edge, limit: per, after });
-        const hit = (page.items || []).find((m) => String(m.id) === String(entry.id));
-        if (hit) {
-          out.media_type = hit.media_type || out.media_type;
-          out.media_url = hit.media_url || out.media_url || "";
-          // hashtag edges没有 thumbnail_url，这里保持原值
-          return out;
-        }
-        if (!page.nextAfter) break;
-        after = page.nextAfter;
-      }
-    }
-  } catch {}
-
-  return out;
 }
