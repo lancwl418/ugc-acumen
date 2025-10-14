@@ -34,8 +34,12 @@ export async function loader({ request }) {
 
   if (limit > 0) list = list.slice(offset, offset + limit);
 
-  // 时间降序
-  list.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+  list.sort((a, b) => {
+    const fa = a?.featured ? 1 : 0;
+    const fb = b?.featured ? 1 : 0;
+    if (fa !== fb) return fb - fa;
+    return (b.timestamp || "").localeCompare(a.timestamp || "");
+  });
 
   return json(
     { media: list, total, page: { limit, offset, returned: list.length } },

@@ -43,10 +43,16 @@ export async function loader({ request }) {
   if (limit > 0) list = list.slice(offset, offset + limit);
 
   // 不再调用 Graph / oEmbed，统一用 Admin/visible 中的数据
-  const media = list.map(buildFromAdmin);
+  // ✅ 把 featured 透传出来（buildFromAdmin 可能不包含该字段）
+  const media = list.map(v => ({ ...buildFromAdmin(v), featured: !!v.featured }));
 
-  // 时间降序
-  media.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+  // ✅ featured 优先，其次按时间降序
+  media.sort((a, b) => {
+    const fa = a.featured ? 1 : 0;
+    const fb = b.featured ? 1 : 0;
+    if (fa !== fb) return fb - fa;
+    return (b.timestamp || "").localeCompare(a.timestamp || "");
+  });
 
   return json(
     { media, total, page: { limit, offset, returned: media.length } },

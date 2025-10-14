@@ -181,17 +181,21 @@ export async function action({ request }) {
 
   const entries = fd.getAll("ugc_entry").map((s) => {
     const e = JSON.parse(s);
-    return {
-      id: String(e.id),
-      category: e.category || "camping",
-      products: Array.isArray(e.products) ? e.products : [],
-      username: e.username || "",
-      timestamp: e.timestamp || "",
-      media_type: e.media_type || "IMAGE",
-      media_url: e.media_url || "",
-      thumbnail_url: e.thumbnail_url || "",
-      caption: e.caption || "",
-      permalink: e.permalink || "",
+  const featured =
+    e.featured === true || e.featured === "true" || e.featured === 1 || e.featured === "1";
+  return {
+    id: String(e.id),
+    category: e.category || "camping",
+    products: Array.isArray(e.products) ? e.products : [],
+    featured,                                 // ✅ 新增
+    username: e.username || "",
+    timestamp: e.timestamp || "",
+    media_type: e.media_type || "IMAGE",
+    media_url: e.media_url || "",
+    thumbnail_url: e.thumbnail_url || "",
+    caption: e.caption || "",
+    permalink: e.permalink || "",
+    hashtag: String(e.hashtag || "").replace(/^#/, ""),
     };
   });
 
@@ -421,7 +425,17 @@ function Section({ title, source, pool, visible, products, saver }) {
                 </Text>
 
                 <Checkbox label="Show on site" checked={isChecked} onChange={() => toggle(item.id, item)} />
-
+                <Checkbox
+  label="Mark as Featured"
+  checked={!!(picked?.featured)}
+  onChange={(value) => {
+    setSelected((prev) => {
+      const n = new Map(prev);
+      if (n.has(item.id)) n.get(item.id).featured = !!value;
+      return n;
+    });
+  }}
+/>
                 {isChecked && (
                   <>
                     <Select
@@ -443,6 +457,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                         id: item.id,
                         category,
                         products: chosenProducts,
+                        featured: picked?.featured,
                         username: item.username,
                         timestamp: item.timestamp,
                         media_type: item.media_type,
@@ -491,7 +506,9 @@ function seedToVisible(seed) {
   return {
     category: "camping",
     products: [],
+    featured: false,             // ✅ 新增
     id: seed.id,
+    hashtag: (seed.hashtag || "").replace(/^#/, ""),
     username: seed.username || "",
     timestamp: seed.timestamp || "",
     media_type: seed.media_type || "IMAGE",
