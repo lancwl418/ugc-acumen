@@ -147,7 +147,7 @@ export async function action({ request }) {
     return json({ ok: true, mode: "replace", count: entries.length });
   }
 
-  // merge（upsert by id）
+  //  merge（upsert by id）
   let existing = [];
   try {
     existing = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || [];
