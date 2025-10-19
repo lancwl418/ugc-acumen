@@ -34,7 +34,7 @@ export async function loader({ request }) {
 
   if (limit > 0) list = list.slice(offset, offset + limit);
 
-  // 时间降序
+  //时间降序
   list.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
 
   return json(
