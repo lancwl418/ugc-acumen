@@ -161,7 +161,8 @@ export async function refreshMediaUrlByHashtag(entry, { per = 30, maxPages = 3 }
   return (await search("top_media")) || (await search("recent_media")) || entry;
 }
 
-/* ============== 仅当“没有可用图片/视频时”才补一次（不再用 oEmbed） ============== */
+/* ============== 仅当“没有可用图片/视频时”才补一次（不再用 oEmbed）============== */
+
 export async function fillMissingMediaOnce(entry, { source="hashtag" } = {}) {
   if (entry.media_url || entry.thumbnail_url) return entry; // 已有就不补
   try {
