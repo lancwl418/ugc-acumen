@@ -3,11 +3,13 @@ import { json } from "@remix-run/node";
 import fs from "fs/promises";
 import { VISIBLE_TAG_PATH, ensureVisibleTagFile } from "../lib/persistPaths.js";
 
+
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
+
 
 async function readVisible() {
   await ensureVisibleTagFile();
