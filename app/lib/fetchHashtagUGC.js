@@ -4,7 +4,7 @@ import fetch from "node-fetch";
 /** 环境变量 */
 const IG_ID      = process.env.INSTAGRAM_IG_ID || "";         // IG Business 用户ID（数字）
 const PAGE_TOKEN = process.env.PAGE_TOKEN || "";               // hashtag edges
-const USER_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN || "";   // /tags & mentioned_media & media detail
+const USER_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN || "";   // /tags & mentioned_media
 const APP_ID     = process.env.META_APP_ID || "";
 const APP_SECRET = process.env.META_APP_SECRET || "";
 const OEMBED     = (APP_ID && APP_SECRET) ? `${APP_ID}|${APP_SECRET}` : "";
@@ -38,11 +38,15 @@ async function getHashtagId(tag){
   if (id) hashtagIdCache.set(tag,id);
   return id;
 }
+
+// ✅ 关键修复：为 hashtag edges 请求补充 thumbnail_url 与 children，便于视频/轮播兜底
 async function edgePage({hashtagId, edge="top_media", limit=10, after=""}){
   const u = new URL(`https://graph.facebook.com/v23.0/${hashtagId}/${edge}`);
   u.searchParams.set("user_id", IG_ID);
-  // 加上 username 便于后台展示（不强依赖）
-  u.searchParams.set("fields", "id,caption,media_type,media_url,permalink,timestamp,username");
+  u.searchParams.set(
+    "fields",
+    "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,username,children{media_type,media_url,thumbnail_url}"
+  );
   u.searchParams.set("limit", String(limit));
   if (after) u.searchParams.set("after", after);
   u.searchParams.set("access_token", PAGE_TOKEN);
@@ -95,7 +99,7 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
         caption: m.caption || "",
         permalink: m.permalink || "",
         timestamp: m.timestamp || "",
-        username: "",             // hashtag edges 不保证提供
+        username: m.username || "",
         hashtag: m.__hashtag || "",
       }));
 
@@ -125,8 +129,8 @@ export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
     const items = (j.data || []).map(m => {
       if (m.media_type === "CAROUSEL_ALBUM" && m.children?.data?.length) {
         const f = m.children.data[0];
-        m.media_type = f.media_type || m.media_type;
-        m.media_url = f.media_url || m.media_url;
+        m.media_type    = f.media_type || m.media_type;
+        m.media_url     = f.media_url  || m.media_url;
         m.thumbnail_url = f.thumbnail_url || m.thumbnail_url || m.media_url;
       } else if (m.media_type === "VIDEO") {
         m.thumbnail_url = m.thumbnail_url || m.media_url || null;
@@ -148,14 +152,10 @@ export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
 }
 
 /* ==================================================================== */
-/* ========== 新：/tags 单条刷新 —— 扫到命中为止 ===================== */
+/* ========== 新：/tags 单条刷新 —— 扫到命中为止（保持原样，不改） === */
 /* ==================================================================== */
 export async function refreshMediaUrlByTag(entry, {
-  per = 50,              // 每页条数（IG 通常 50 比较稳）
-  maxScan = 5000,        // 最多扫描多少条，防止极端情况
-  hardPageCap = 200,     // 硬性最多翻多少页，双保险
-  retry = 3,             // 瞬时错误重试
-  retryBaseMs = 500,     // 重试的基础退避
+  per = 50, maxScan = 5000, hardPageCap = 200, retry = 3, retryBaseMs = 500,
 } = {}) {
   if (!IG_ID || !USER_TOKEN || !entry || !entry.id) return entry;
 
@@ -180,10 +180,7 @@ export async function refreshMediaUrlByTag(entry, {
       r = await withLimit(() => fetch(u));
       j = await r.json();
       const transient =
-        j?.error?.code === 4 || // rate limit
-        j?.error?.code === 17 || // user request limit
-        j?.error?.code === 32 || // read-only mode
-        r.status >= 500;         // server error
+        j?.error?.code === 4 || j?.error?.code === 17 || j?.error?.code === 32 || r.status >= 500;
       if (r.ok && !j?.error) break;
       if (k < retry && transient) {
         const backoff = retryBaseMs * Math.pow(2, k);
@@ -204,6 +201,8 @@ export async function refreshMediaUrlByTag(entry, {
         hit.media_type    = f.media_type || hit.media_type;
         hit.media_url     = f.media_url  || hit.media_url;
         hit.thumbnail_url = f.thumbnail_url || hit.thumbnail_url || hit.media_url;
+      } else if (hit.media_type === "VIDEO") {
+        hit.thumbnail_url = hit.thumbnail_url || hit.media_url || null;
       }
       if (!hit.media_url && !hit.thumbnail_url) return entry;
 
@@ -228,7 +227,7 @@ export async function refreshMediaUrlByTag(entry, {
 }
 
 /* ==================================================================== */
-/* ========== Hashtag：按 hashtag 扫描刷新指定条目（保留） ============ */
+/* ========== Hashtag：按 hashtag 扫描刷新指定条目（修复兜底） ======= */
 /* ==================================================================== */
 export async function refreshMediaUrlByHashtag(entry, {
   per = 30, maxScan = 3000, hardPageCap = 200
@@ -270,7 +269,7 @@ export async function refreshMediaUrlByHashtag(entry, {
           caption: hit.caption ?? entry.caption,
           permalink: hit.permalink || entry.permalink,
           timestamp: hit.timestamp || entry.timestamp,
-          username: entry.username || "", // hashtag edges不提供
+          username: hit.username || entry.username,
         };
       }
       if (!p.nextAfter) break;
@@ -283,7 +282,7 @@ export async function refreshMediaUrlByHashtag(entry, {
 }
 
 /* ==================================================================== */
-/* ========== 仅当“没有可用媒体”时才补一次（hashtag / mentions） ===== */
+/* ========== 仅当“没有可用媒体”时才补一次（保持原样） ================ */
 /* ==================================================================== */
 export async function fillMissingMediaOnce(entry, { source="hashtag" } = {}) {
   if (entry.media_url || entry.thumbnail_url) return entry;
@@ -299,7 +298,7 @@ export async function fillMissingMediaOnce(entry, { source="hashtag" } = {}) {
 }
 
 /* ==================================================================== */
-/* ========== 可选：按链接导入（若不用 oEmbed，可忽略此函数） ========= */
+/* ========== 可选：按链接导入（保持原样） ============================= */
 /* ==================================================================== */
 export async function fetchInstagramByPermalink(permalink) {
   const url = String(permalink || "").trim();
@@ -425,26 +424,27 @@ export async function scanTagsUntil({
       });
 
       goals.delete(id);
-      if (goals.size === 0) break; // ✅ 所有目标已命中，提前结束
+      if (goals.size === 0) break;
     }
 
     if (goals.size === 0) break;
     after = j?.paging?.cursors?.after || "";
-    if (!after) break; // 没有下一页了
+    if (!after) break;
   }
 
   const done = goals.size === 0 || !after;
   return { hits, scanned, pages, done };
 }
+
 /* ==================================================================== */
-/* ========== Mentions：单条刷新（按 /tags 扫到命中为止） ============== */
+/* ========== 新：批量扫描 hashtags，命中所有 targetIds 即停 ========= */
 /* ==================================================================== */
 export async function scanHashtagsUntil({
-  tags = DEFAULT_TAGS,               // string 或 string[]
-  targetIds,                         // Set<string> / string[]
-  per = 50,                          // 每页条数
-  maxScanPerTagPerEdge = 6000,       // 单 tag 单 edge 最大扫描条数
-  hardPageCapPerTagPerEdge = 200,    // 单 tag 单 edge 最大翻页数
+  tags = DEFAULT_TAGS,
+  targetIds,
+  per = 50,
+  maxScanPerTagPerEdge = 6000,
+  hardPageCapPerTagPerEdge = 200,
 } = {}) {
   const tagList = Array.isArray(tags) ? tags : parseTags(tags);
   const goals = new Set(Array.isArray(targetIds) ? targetIds.map(String) : Array.from(targetIds).map(String));
@@ -459,7 +459,6 @@ export async function scanHashtagsUntil({
   const ids = await Promise.all(tagList.map(getHashtagId));
   const pairs = tagList.map((t,i)=>({tag:t,id:ids[i]})).filter(p=>p.id);
 
-  // 逐个 hashtag：先 top_media，再 recent_media；随时命中完就提前退出
   for (const {tag, id: hid} of pairs) {
     for (const edge of ["top_media", "recent_media"]) {
       let after = "", localScanned = 0, localPages = 0;
@@ -474,11 +473,20 @@ export async function scanHashtagsUntil({
           const id = String(m.id || "");
           if (!goals.has(id)) continue;
 
+          if (m.media_type === "CAROUSEL_ALBUM" && m.children?.data?.length) {
+            const f = m.children.data[0];
+            m.media_type    = f.media_type || m.media_type;
+            m.media_url     = f.media_url  || m.media_url;
+            m.thumbnail_url = f.thumbnail_url || m.thumbnail_url || m.media_url;
+          } else if (m.media_type === "VIDEO") {
+            m.thumbnail_url = m.thumbnail_url || m.media_url || null;
+          }
+
           hits.set(id, {
             id,
             media_type: m.media_type,
-            media_url: m.media_url || "",
-            thumbnail_url: null,
+            media_url: m.media_url || m.thumbnail_url || "",
+            thumbnail_url: m.thumbnail_url || null,
             caption: m.caption || "",
             permalink: m.permalink || "",
             timestamp: m.timestamp || "",
