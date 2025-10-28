@@ -25,14 +25,14 @@ import fs from "fs/promises";
 import path from "path";
 
 import {
-  VISIBLE_HASHTAG_PATH,
-  ensureVisibleHashtagFile,
+  VISIBLE_HASH_PATH,
+  ensureVisibleHashFile,
 } from "../lib/persistPaths.js";
 
 import {
   fetchHashtagUGCPage,
   refreshMediaUrlByHashtag,
-  scanHashtagUntil,
+  scanHashtagsUntil,
 } from "../lib/fetchHashtagUGC.js";
 
 const CATEGORY_OPTIONS = [
@@ -43,7 +43,6 @@ const CATEGORY_OPTIONS = [
   { label: "Documentation", value: "documentation" },
   { label: "Events", value: "events" },
 ];
-
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
@@ -52,9 +51,8 @@ async function readJsonSafe(file, fallback = "[]") {
   try { return JSON.parse((await fs.readFile(file, "utf-8")) || fallback); }
   catch { return JSON.parse(fallback); }
 }
-function safeParseJSON(s, fallback) {
-  try { return JSON.parse(s); } catch { return fallback; }
-}
+function b64e(obj){ return Buffer.from(JSON.stringify(obj||{}), "utf-8").toString("base64url"); }
+function b64d(s){ try{ return JSON.parse(Buffer.from(String(s||""), "base64url").toString("utf-8")||"{}"); }catch{ return {}; } }
 function readStackSS(key) {
   try { const raw = sessionStorage.getItem(key); return raw ? JSON.parse(raw) : []; }
   catch { return []; }
@@ -66,32 +64,28 @@ function writeStackSS(key, arr) {
 /* ---------- loader ---------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
+  const tags = url.searchParams.get("tags") || ""; // 逗号分隔
   const hSize = Math.min(40, Math.max(6, Number(url.searchParams.get("hSize") || 12)));
-  const hTags = String(url.searchParams.get("hTags") || "").trim();
-  const hCursorsStr = url.searchParams.get("hCursors") || "{}";
-  const hCursors = safeParseJSON(hCursorsStr, {});
+  const c = url.searchParams.get("c") || "";       // base64 的 per-tag cursors
 
-  await ensureVisibleHashtagFile();
-  const [visible, products] = await Promise.all([
-    readJsonSafe(VISIBLE_HASHTAG_PATH),
+  await ensureVisibleHashFile();
+  const [hashVisible, products] = await Promise.all([
+    readJsonSafe(VISIBLE_HASH_PATH),
     readJsonSafe(path.resolve("public/products.json"), "[]"),
   ]);
 
-  const hashPromise = (async () => {
+  const cursors = c ? b64d(c) : {};
+  const hashtagPromise = (async () => {
     try {
-      const page = await fetchHashtagUGCPage({
-        tags: hTags || undefined,
-        limit: hSize,
-        cursors: hCursors,
-      });
-      return { items: page.items || [], nextCursors: page.nextCursors || {}, pageSize: hSize, tags: hTags };
+      const page = await fetchHashtagUGCPage({ tags, limit: hSize, cursors });
+      return { items: page.items || [], nextCursors: page.nextCursors || {}, pageSize: hSize, tags };
     } catch {
-      return { items: [], nextCursors: {}, pageSize: hSize, tags: hTags };
+      return { items: [], nextCursors: {}, pageSize: hSize, tags };
     }
   })();
 
   return defer(
-    { hashtag: hashPromise, visible, products },
+    { hashtag: hashtagPromise, visible: hashVisible, products },
     { headers: { "Cache-Control": "private, max-age=30" } }
   );
 }
@@ -101,13 +95,12 @@ export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
 
-  // ✅ 一键刷新：按 hashtag 聚合，逐个 hashtag 扫到命中完
-  if (op === "refreshVisibleAllHashtag") {
-    await ensureVisibleHashtagFile();
+  // 一键刷新所有 visible（扫描 hashtags，命中全部即停）
+  if (op === "refreshVisibleAll") {
+    await ensureVisibleHashFile();
     let visible = [];
-    try { visible = JSON.parse(await fs.readFile(VISIBLE_HASHTAG_PATH, "utf-8")) || []; } catch {}
+    try { visible = JSON.parse(await fs.readFile(VISIBLE_HASH_PATH, "utf-8")) || []; } catch {}
 
-    // 目标 id 集合 & 参与扫描的 hashtags（来自 visible 中的 hashtag 字段）
     const targetIds = visible.map(v => String(v.id));
     const tagSet = new Set(
       visible.map(v => String(v.hashtag || "").replace(/^#/, "")).filter(Boolean)
@@ -128,16 +121,20 @@ export async function action({ request }) {
       if (!hit) {
         return { ...v, lastRefreshedAt: nowISO, lastRefreshError: v.lastRefreshError ?? null };
       }
+
+      // ✅ 更保守的兜底组合：谁有值用谁，既不丢新值也不清空旧值
+      const nextMedia  = hit.media_url  || v.media_url  || "";
+      const nextThumb  = (hit.thumbnail_url ?? v.thumbnail_url) ?? null;
       const changed =
-        (hit.media_url && hit.media_url !== v.media_url) ||
-        (hit.thumbnail_url && hit.thumbnail_url !== v.thumbnail_url) ||
+        (nextMedia && nextMedia !== v.media_url) ||
+        (nextThumb && nextThumb !== v.thumbnail_url) ||
         (hit.media_type && hit.media_type !== v.media_type);
 
       return {
         ...v,
         media_type:    hit.media_type || v.media_type,
-        media_url:     hit.media_url  || v.media_url,
-        thumbnail_url: hit.thumbnail_url ?? v.thumbnail_url ?? null,
+        media_url:     nextMedia,
+        thumbnail_url: nextThumb,
         caption:       hit.caption ?? v.caption,
         permalink:     hit.permalink || v.permalink,
         timestamp:     hit.timestamp || v.timestamp,
@@ -148,7 +145,7 @@ export async function action({ request }) {
       };
     });
 
-    await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(merged, null, 2), "utf-8");
+    await fs.writeFile(VISIBLE_HASH_PATH, JSON.stringify(merged, null, 2), "utf-8");
 
     const updatedCount = merged.reduce((n, m, i) => {
       const old = visible[i] || {};
@@ -157,22 +154,24 @@ export async function action({ request }) {
 
     return json({
       ok: true,
-      op: "refreshVisibleAllHashtag",
+      op: "refreshVisibleAll",
       total: merged.length,
       updated: updatedCount,
-      scanned: totalScanned,
-      pages: totalPages,
+      scanned,
+      pages,
+      done,
+      tagsUsed: tags,
     });
   }
 
-  // ✅ 刷新“勾选的” visible（逐条：各自扫到命中为止）
-  if (op === "refreshVisibleHashtagChecked") {
+  // 刷新“勾选的” visible（逐条：各自扫到命中为止）
+  if (op === "refreshVisible") {
     const picked = fd.getAll("ugc_entry").map((s) => JSON.parse(s));
     const idSet = new Set(picked.map((e) => String(e.id)));
 
-    await ensureVisibleHashtagFile();
+    await ensureVisibleHashFile();
     let visible = [];
-    try { visible = JSON.parse(await fs.readFile(VISIBLE_HASHTAG_PATH, "utf-8")) || []; } catch {}
+    try { visible = JSON.parse(await fs.readFile(VISIBLE_HASH_PATH, "utf-8")) || []; } catch {}
 
     const nowISO = new Date().toISOString();
     const updated = [];
@@ -180,16 +179,26 @@ export async function action({ request }) {
       if (!idSet.has(String(v.id))) { updated.push(v); continue; }
       try {
         const fresh = await refreshMediaUrlByHashtag(v, { per: 50, maxScan: 6000, hardPageCap: 200 });
-        const found = (fresh.media_url && fresh.media_url !== v.media_url) ||
-                      (fresh.thumbnail_url && fresh.thumbnail_url !== v.thumbnail_url);
-        updated.push({ ...fresh, lastRefreshedAt: nowISO, ...(found ? { lastFoundAt: nowISO } : {}) });
+        const nextMedia = fresh.media_url || v.media_url || "";
+        const nextThumb = (fresh.thumbnail_url ?? v.thumbnail_url) ?? null;
+        const found = (nextMedia && nextMedia !== v.media_url) ||
+                      (nextThumb && nextThumb !== v.thumbnail_url);
+        updated.push({
+          ...v,
+          ...fresh,
+          media_url: nextMedia,
+          thumbnail_url: nextThumb,
+          lastRefreshedAt: nowISO,
+          ...(found ? { lastFoundAt: nowISO } : {}),
+          lastRefreshError: null,
+        });
       } catch {
         updated.push({ ...v, lastRefreshedAt: nowISO, lastRefreshError: "fetch_failed" });
       }
     }
 
-    await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(updated, null, 2), "utf-8");
-    return json({ ok: true, op: "refreshVisibleHashtagChecked", refreshed: idSet.size, total: updated.length });
+    await fs.writeFile(VISIBLE_HASH_PATH, JSON.stringify(updated, null, 2), "utf-8");
+    return json({ ok: true, op: "refreshVisible", refreshed: idSet.size, total: updated.length });
   }
 
   // 保存可见列表（merge | replace）
@@ -199,7 +208,6 @@ export async function action({ request }) {
     const e = JSON.parse(s);
     return {
       id: String(e.id),
-      hashtag: String(e.hashtag || "").replace(/^#/, ""),
       category: e.category || "camping",
       products: Array.isArray(e.products) ? e.products : [],
       username: e.username || "",
@@ -209,19 +217,20 @@ export async function action({ request }) {
       thumbnail_url: e.thumbnail_url || "",
       caption: e.caption || "",
       permalink: e.permalink || "",
+      hashtag: String(e.hashtag || "").replace(/^#/, ""), // ✅ 关键：保存 hashtag，供刷新定位
     };
   });
 
-  await ensureVisibleHashtagFile();
+  await ensureVisibleHashFile();
 
   if (mode === "replace") {
-    await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(entries, null, 2), "utf-8");
+    await fs.writeFile(VISIBLE_HASH_PATH, JSON.stringify(entries, null, 2), "utf-8");
     return json({ ok: true, mode: "replace", count: entries.length });
   }
 
   // merge（upsert by id）
   let existing = [];
-  try { existing = JSON.parse(await fs.readFile(VISIBLE_HASHTAG_PATH, "utf-8")) || []; } catch {}
+  try { existing = JSON.parse(await fs.readFile(VISIBLE_HASH_PATH, "utf-8")) || []; } catch {}
 
   const merged = new Map(existing.map((x) => [String(x.id), x]));
   for (const e of entries) {
@@ -230,7 +239,7 @@ export async function action({ request }) {
   }
 
   const toWrite = Array.from(merged.values());
-  await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(toWrite, null, 2), "utf-8");
+  await fs.writeFile(VISIBLE_HASH_PATH, JSON.stringify(toWrite, null, 2), "utf-8");
   return json({ ok: true, mode: "merge", count: entries.length, total: toWrite.length });
 }
 
@@ -253,10 +262,10 @@ export default function AdminHashtagUGC() {
             <Await resolve={data.hashtag}>
               {(h) => (
                 <>
-                  <BlockStack gap="400" id="tab-hashtag">
+                  <BlockStack gap="400" id="tab-hashtags">
                     <Section
-                      title={`Hashtags ${h.tags ? `(${h.tags})` : ""}`}
-                      source="hashtag"
+                      title={`Hashtags (${h.tags || ""})`}
+                      source="hashtags"
                       pool={h.items}
                       visible={data.visible}
                       products={data.products}
@@ -280,7 +289,7 @@ export default function AdminHashtagUGC() {
   );
 }
 
-/* ---------- Pager：用 nextCursors 做前进/后退 ---------- */
+/* ---------- Pager ---------- */
 function Pager({ view, routeLoading, hash, stackKey }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -294,9 +303,9 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     setBusy(true);
     const usp = new URLSearchParams(location.search);
     const stack = readStackSS(stackKey);
-    stack.push(usp.get("hCursors") || "{}");
+    stack.push(usp.get("c") || "");
     writeStackSS(stackKey, stack);
-    usp.set("c", b64e(view.nextCursors || {}));       // ✅ 把 per-tag 游标编码进 URL
+    usp.set("c", b64e(view.nextCursors || {}));
     usp.set("hSize", String(view.pageSize || 12));
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
@@ -306,10 +315,11 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     const stack = readStackSS(stackKey);
     if (stack.length === 0) return;
     setBusy(true);
-    const prevCursors = stack.pop() || "{}";
+    const prevC = stack.pop() || "";
     writeStackSS(stackKey, stack);
     const usp = new URLSearchParams(location.search);
-    usp.set("hCursors", prevCursors);
+    if (prevC) usp.set("c", prevC);
+    else usp.delete("c");
     usp.set("hSize", String(view.pageSize || 12));
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
@@ -341,11 +351,11 @@ function Section({ title, source, pool, visible, products, saver }) {
   const [selected, setSelected] = useState(initialSelected);
   const opRef = useRef(null);
 
-  const toggle = (seed) =>
+  const toggle = (id, seed) =>
     setSelected((prev) => {
       const n = new Map(prev);
-      if (n.has(seed.id)) n.delete(seed.id);
-      else n.set(seed.id, seedToVisible(seed));
+      if (n.has(id)) n.delete(id);
+      else n.set(id, seedToVisible(seed));
       return n;
     });
 
@@ -374,11 +384,11 @@ function Section({ title, source, pool, visible, products, saver }) {
           <Button submit onClick={() => { if (opRef.current) opRef.current.value = "saveVisible"; }} primary>
             Save visible list (hashtags)
           </Button>
-          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisibleHashtagChecked"; }}>
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisible"; }}>
             Refresh media URL (checked)
           </Button>
-          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisibleAllHashtag"; }}>
-            Refresh ALL visible (hashtag)
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisibleAll"; }}>
+            Refresh ALL visible
           </Button>
         </InlineStack>
       </InlineStack>
@@ -400,10 +410,11 @@ function Section({ title, source, pool, visible, products, saver }) {
           const thumb = item.thumbnail_url || item.media_url || TINY;
 
           return (
-            <Card key={`ht-${item.id}`} padding="400">
+            <Card key={`hash-${item.id}`} padding="400">
               <BlockStack gap="200">
                 <InlineStack gap="200" blockAlign="center">
-                  {item.hashtag ? <Tag>#{item.hashtag}</Tag> : null}
+                  <Tag>#{item.hashtag || "tag"}</Tag>
+                  <Tag>@{item.username || "author"}</Tag>
                   <Text as="span" variant="bodySm" tone="subdued">
                     {item.timestamp ? new Date(item.timestamp).toLocaleString() : ""}
                   </Text>
@@ -435,7 +446,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                   {item.caption && item.caption.length > 160 ? "…" : ""}
                 </Text>
 
-                <Checkbox label="Show on site" checked={isChecked} onChange={() => toggle(item)} />
+                <Checkbox label="Show on site" checked={isChecked} onChange={() => toggle(item.id, item)} />
 
                 {isChecked && (
                   <>
@@ -456,10 +467,10 @@ function Section({ title, source, pool, visible, products, saver }) {
                       name="ugc_entry"
                       value={JSON.stringify({
                         id: item.id,
-                        hashtag: item.hashtag,       // ✅ 关键：保存 hashtag
+                        hashtag: item.hashtag,       // ✅ 保存 hashtag
                         category,
                         products: chosenProducts,
-                        username: item.username || "",
+                        username: item.username,
                         timestamp: item.timestamp,
                         media_type: item.media_type,
                         media_url: item.media_url,
@@ -508,7 +519,7 @@ function seedToVisible(seed) {
     category: "camping",
     products: [],
     id: seed.id,
-    hashtag: String(seed.hashtag || "").replace(/^#/, ""),
+    hashtag: (seed.hashtag || "").replace(/^#/, ""),
     username: seed.username || "",
     timestamp: seed.timestamp || "",
     media_type: seed.media_type || "IMAGE",
