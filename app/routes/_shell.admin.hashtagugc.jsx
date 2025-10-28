@@ -64,7 +64,11 @@ function writeStackSS(key, arr) {
 /* ---------- loader ---------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
-  const tags = url.searchParams.get("tags") || ""; // 逗号分隔
+  const tags =
+  url.searchParams.get("tags") ||
+  process.env.HASHTAGS ||
+  process.env.HASHTAG ||
+  "acumencamera";
   const hSize = Math.min(40, Math.max(6, Number(url.searchParams.get("hSize") || 12)));
   const c = url.searchParams.get("c") || "";       // base64 的 per-tag cursors
 
