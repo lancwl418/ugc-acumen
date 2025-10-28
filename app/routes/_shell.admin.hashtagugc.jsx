@@ -107,51 +107,46 @@ export async function action({ request }) {
     let visible = [];
     try { visible = JSON.parse(await fs.readFile(VISIBLE_HASHTAG_PATH, "utf-8")) || []; } catch {}
 
-    // tag => Set(ids)
-    const byTag = new Map();
-    for (const v of visible) {
-      const tag = String(v.hashtag || "").replace(/^#/, "");
-      if (!tag) continue;
-      if (!byTag.has(tag)) byTag.set(tag, new Set());
-      byTag.get(tag).add(String(v.id));
-    }
+    // 目标 id 集合 & 参与扫描的 hashtags（来自 visible 中的 hashtag 字段）
+    const targetIds = visible.map(v => String(v.id));
+    const tagSet = new Set(
+      visible.map(v => String(v.hashtag || "").replace(/^#/, "")).filter(Boolean)
+    );
+    const tags = Array.from(tagSet).join(",");
 
     const nowISO = new Date().toISOString();
-    const merged = [...visible];
-    let totalScanned = 0;
-    let totalPages = 0;
+    const { hits, scanned, pages, done } = await scanHashtagsUntil({
+      tags,
+      targetIds,
+      per: 50,
+      maxScanPerTagPerEdge: 6000,
+      hardPageCapPerTagPerEdge: 200,
+    });
 
-    for (const [tag, ids] of byTag.entries()) {
-      const { hits, scanned, pages } = await scanHashtagUntil({
-        tag, targetIds: ids, per: 30, maxScan: 10000, hardPageCap: 300,
-      });
-      totalScanned += scanned; totalPages += pages;
-
-      for (let i = 0; i < merged.length; i++) {
-        const v = merged[i];
-        const vt = String(v.hashtag || "").replace(/^#/, "");
-        if (vt !== tag) continue;
-        const hit = hits.get(String(v.id));
-        if (!hit) continue;
-
-        const changed =
-          (hit.media_url && hit.media_url !== v.media_url) ||
-          (hit.media_type && hit.media_type !== v.media_type);
-
-        merged[i] = {
-          ...v,
-          media_type: hit.media_type || v.media_type,
-          media_url: hit.media_url || v.media_url,
-          caption: hit.caption ?? v.caption,
-          permalink: hit.permalink || v.permalink,
-          timestamp: hit.timestamp || v.timestamp,
-          username: v.username || "", // hashtag 不提供，保留旧值
-          lastRefreshedAt: nowISO,
-          ...(changed ? { lastFoundAt: nowISO } : {}),
-          lastRefreshError: null,
-        };
+    const merged = visible.map(v => {
+      const hit = hits.get(String(v.id));
+      if (!hit) {
+        return { ...v, lastRefreshedAt: nowISO, lastRefreshError: v.lastRefreshError ?? null };
       }
-    }
+      const changed =
+        (hit.media_url && hit.media_url !== v.media_url) ||
+        (hit.thumbnail_url && hit.thumbnail_url !== v.thumbnail_url) ||
+        (hit.media_type && hit.media_type !== v.media_type);
+
+      return {
+        ...v,
+        media_type:    hit.media_type || v.media_type,
+        media_url:     hit.media_url  || v.media_url,
+        thumbnail_url: hit.thumbnail_url ?? v.thumbnail_url ?? null,
+        caption:       hit.caption ?? v.caption,
+        permalink:     hit.permalink || v.permalink,
+        timestamp:     hit.timestamp || v.timestamp,
+        username:      hit.username  || v.username,
+        lastRefreshedAt: nowISO,
+        ...(changed ? { lastFoundAt: nowISO } : {}),
+        lastRefreshError: null,
+      };
+    });
 
     await fs.writeFile(VISIBLE_HASHTAG_PATH, JSON.stringify(merged, null, 2), "utf-8");
 
@@ -184,8 +179,9 @@ export async function action({ request }) {
     for (const v of visible) {
       if (!idSet.has(String(v.id))) { updated.push(v); continue; }
       try {
-        const fresh = await refreshMediaUrlByHashtag(v, { per: 30, maxScan: 6000, hardPageCap: 200 });
-        const found = (fresh.media_url && fresh.media_url !== v.media_url);
+        const fresh = await refreshMediaUrlByHashtag(v, { per: 50, maxScan: 6000, hardPageCap: 200 });
+        const found = (fresh.media_url && fresh.media_url !== v.media_url) ||
+                      (fresh.thumbnail_url && fresh.thumbnail_url !== v.thumbnail_url);
         updated.push({ ...fresh, lastRefreshedAt: nowISO, ...(found ? { lastFoundAt: nowISO } : {}) });
       } catch {
         updated.push({ ...v, lastRefreshedAt: nowISO, lastRefreshError: "fetch_failed" });
@@ -300,8 +296,7 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     const stack = readStackSS(stackKey);
     stack.push(usp.get("hCursors") || "{}");
     writeStackSS(stackKey, stack);
-
-    usp.set("hCursors", JSON.stringify(view.nextCursors || {}));
+    usp.set("c", b64e(view.nextCursors || {}));       // ✅ 把 per-tag 游标编码进 URL
     usp.set("hSize", String(view.pageSize || 12));
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
@@ -461,7 +456,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                       name="ugc_entry"
                       value={JSON.stringify({
                         id: item.id,
-                        hashtag: item.hashtag || "",
+                        hashtag: item.hashtag,       // ✅ 关键：保存 hashtag
                         category,
                         products: chosenProducts,
                         username: item.username || "",
