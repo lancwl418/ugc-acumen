@@ -64,11 +64,7 @@ function writeStackSS(key, arr) {
 /* ---------- loader ---------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
-  const tags =
-  url.searchParams.get("tags") ||
-  process.env.HASHTAGS ||
-  process.env.HASHTAG ||
-  "acumencamera";
+  const tags = url.searchParams.get("tags") || ""; // 逗号分隔
   const hSize = Math.min(40, Math.max(6, Number(url.searchParams.get("hSize") || 12)));
   const c = url.searchParams.get("c") || "";       // base64 的 per-tag cursors
 
@@ -105,6 +101,7 @@ export async function action({ request }) {
     let visible = [];
     try { visible = JSON.parse(await fs.readFile(VISIBLE_HASH_PATH, "utf-8")) || []; } catch {}
 
+    // 目标 id 集合 & 参与扫描的 hashtags（来自 visible 中的 hashtag 字段）
     const targetIds = visible.map(v => String(v.id));
     const tagSet = new Set(
       visible.map(v => String(v.hashtag || "").replace(/^#/, "")).filter(Boolean)
@@ -125,20 +122,16 @@ export async function action({ request }) {
       if (!hit) {
         return { ...v, lastRefreshedAt: nowISO, lastRefreshError: v.lastRefreshError ?? null };
       }
-
-      // ✅ 更保守的兜底组合：谁有值用谁，既不丢新值也不清空旧值
-      const nextMedia  = hit.media_url  || v.media_url  || "";
-      const nextThumb  = (hit.thumbnail_url ?? v.thumbnail_url) ?? null;
       const changed =
-        (nextMedia && nextMedia !== v.media_url) ||
-        (nextThumb && nextThumb !== v.thumbnail_url) ||
+        (hit.media_url && hit.media_url !== v.media_url) ||
+        (hit.thumbnail_url && hit.thumbnail_url !== v.thumbnail_url) ||
         (hit.media_type && hit.media_type !== v.media_type);
 
       return {
         ...v,
         media_type:    hit.media_type || v.media_type,
-        media_url:     nextMedia,
-        thumbnail_url: nextThumb,
+        media_url:     hit.media_url  || v.media_url,
+        thumbnail_url: hit.thumbnail_url ?? v.thumbnail_url ?? null,
         caption:       hit.caption ?? v.caption,
         permalink:     hit.permalink || v.permalink,
         timestamp:     hit.timestamp || v.timestamp,
@@ -183,19 +176,9 @@ export async function action({ request }) {
       if (!idSet.has(String(v.id))) { updated.push(v); continue; }
       try {
         const fresh = await refreshMediaUrlByHashtag(v, { per: 50, maxScan: 6000, hardPageCap: 200 });
-        const nextMedia = fresh.media_url || v.media_url || "";
-        const nextThumb = (fresh.thumbnail_url ?? v.thumbnail_url) ?? null;
-        const found = (nextMedia && nextMedia !== v.media_url) ||
-                      (nextThumb && nextThumb !== v.thumbnail_url);
-        updated.push({
-          ...v,
-          ...fresh,
-          media_url: nextMedia,
-          thumbnail_url: nextThumb,
-          lastRefreshedAt: nowISO,
-          ...(found ? { lastFoundAt: nowISO } : {}),
-          lastRefreshError: null,
-        });
+        const found = (fresh.media_url && fresh.media_url !== v.media_url) ||
+                      (fresh.thumbnail_url && fresh.thumbnail_url !== v.thumbnail_url);
+        updated.push({ ...fresh, lastRefreshedAt: nowISO, ...(found ? { lastFoundAt: nowISO } : {}) });
       } catch {
         updated.push({ ...v, lastRefreshedAt: nowISO, lastRefreshError: "fetch_failed" });
       }
@@ -309,7 +292,7 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     const stack = readStackSS(stackKey);
     stack.push(usp.get("c") || "");
     writeStackSS(stackKey, stack);
-    usp.set("c", b64e(view.nextCursors || {}));
+    usp.set("c", b64e(view.nextCursors || {}));       // ✅ 把 per-tag 游标编码进 URL
     usp.set("hSize", String(view.pageSize || 12));
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
@@ -471,7 +454,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                       name="ugc_entry"
                       value={JSON.stringify({
                         id: item.id,
-                        hashtag: item.hashtag,       // ✅ 保存 hashtag
+                        hashtag: item.hashtag,       // ✅ 关键：保存 hashtag
                         category,
                         products: chosenProducts,
                         username: item.username,
