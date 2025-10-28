@@ -1,129 +1,55 @@
-// app/lib/persistPaths.js
-import fs from "fs/promises";
+// app/lib/persistPaths.js —— 兼容最终版：优先旧路径 + 永不误清空 + 别名
 import path from "path";
-import os from "os";
+import fs from "fs/promises";
+import { existsSync } from "fs";
 
-// 优先用环境变量，否则走 /data（Render 挂载点）
-export const DATA_DIR = process.env.DATA_DIR || "/data";
-
-export const VISIBLE_PATH          = path.join(DATA_DIR, "visible.json");
-
-// ✅ Hashtag 可见配置
-export const VISIBLE_HASHTAG_PATH  = path.join(DATA_DIR, "visible_hashtag.json");
-
-// ✅ Tag / Mentions 可见配置
-export const VISIBLE_TAG_PATH      = path.join(DATA_DIR, "visible_tag_ugc.json");
-
-// 如果你还想要缓存文件，也可以一起放到盘上：
-// export const CACHE_PATH = path.join(DATA_DIR, "cache_ugc.json");
-
-/* ------------------------------------------------------------------ */
-/* 初始化（若不存在则创建）：                                           */
-/* ------------------------------------------------------------------ */
-
-// 首次启动时，/data/visible.json 不存在 -> 用仓库里的 public/visible.json 初始化
-export async function ensureVisibleFile() {
-  try {
-    await fs.access(VISIBLE_PATH);
-  } catch {
-    const fallback = path.resolve("public/visible.json"); // 仓库里的默认文件
-    const raw = await fs.readFile(fallback, "utf-8");
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    await fs.writeFile(VISIBLE_PATH, raw, "utf-8");
+/* 选择第一个已存在的路径；都不存在则选第一个候选 */
+function pickExisting(cands) {
+  for (const p of cands) {
+    try { if (existsSync(p)) return p; } catch {}
   }
+  return cands[0];
 }
 
-// ✅ 新增：初始化 /data/visible_hashtag.json
-export async function ensureVisibleHashtagFile() {
-  try {
-    await fs.access(VISIBLE_HASHTAG_PATH);
-  } catch {
-    // 若仓库里有默认文件，就读它；没有就写一个空数组
-    const fallback = path.resolve("public/visible_hashtag.json");
-    let raw = "[]";
-    try {
-      raw = await fs.readFile(fallback, "utf-8");
-    } catch {}
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    await fs.writeFile(VISIBLE_HASHTAG_PATH, raw, "utf-8");
-  }
-}
+/* ===== Mentions 可见清单 ===== */
+const TAG_ENV = process.env.VISIBLE_TAG_PATH && process.env.VISIBLE_TAG_PATH.trim();
+const TAG_CANDIDATES = [
+  TAG_ENV ? path.resolve(TAG_ENV) : null,
+  path.resolve("public/data/visible_tag_ugc.json"),
+  path.resolve("public/visible_tag_ugc.json"),
+].filter(Boolean);
 
-// ✅ 新增：初始化 /data/visible_tag_ugc.json
+export const VISIBLE_TAG_PATH = pickExisting(TAG_CANDIDATES);
+
 export async function ensureVisibleTagFile() {
-  try {
-    await fs.access(VISIBLE_TAG_PATH);
-  } catch {
-    const fallback = path.resolve("public/visible_tag_ugc.json");
-    let raw = "[]";
-    try {
-      raw = await fs.readFile(fallback, "utf-8");
-    } catch {}
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    await fs.writeFile(VISIBLE_TAG_PATH, raw, "utf-8");
+  try { await fs.access(VISIBLE_TAG_PATH); }
+  catch {
+    await fs.mkdir(path.dirname(VISIBLE_TAG_PATH), { recursive: true });
+    await fs.writeFile(VISIBLE_TAG_PATH, "[]", "utf-8");
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* 读取工具：                                                          */
-/* ------------------------------------------------------------------ */
+/* ===== Hashtags 可见清单 ===== */
+const HASH_ENV = process.env.VISIBLE_HASH_PATH && process.env.VISIBLE_HASH_PATH.trim();
+const HASH_CANDIDATES = [
+  HASH_ENV ? path.resolve(HASH_ENV) : null,
+  path.resolve("public/data/visible_hashtag_ugc.json"),
+  path.resolve("public/visible_hashtag_ugc.json"),
+].filter(Boolean);
 
-export async function readVisibleHashtag() {
-  await ensureVisibleHashtagFile();
-  try {
-    const raw = await fs.readFile(VISIBLE_HASHTAG_PATH, "utf-8");
-    return JSON.parse(raw || "[]");
-  } catch {
-    return [];
+export const VISIBLE_HASH_PATH = pickExisting(HASH_CANDIDATES);
+
+export async function ensureVisibleHashFile() {
+  try { await fs.access(VISIBLE_HASH_PATH); }
+  catch {
+    await fs.mkdir(path.dirname(VISIBLE_HASH_PATH), { recursive: true });
+    await fs.writeFile(VISIBLE_HASH_PATH, "[]", "utf-8");
   }
 }
 
-export async function readVisibleTag() {
-  await ensureVisibleTagFile();
-  try {
-    const raw = await fs.readFile(VISIBLE_TAG_PATH, "utf-8");
-    return JSON.parse(raw || "[]");
-  } catch {
-    return [];
-  }
-}
+/* ===== 兼容旧命名（不要删） ===== */
+export const VISIBLE_PATH = VISIBLE_TAG_PATH;
+export async function ensureVisibleFile() { return ensureVisibleTagFile(); }
 
-export async function readVisible() {
-  await ensureVisibleFile();
-  try {
-    const raw = await fs.readFile(VISIBLE_PATH, "utf-8");
-    return JSON.parse(raw || "[]");
-  } catch {
-    return [];
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/* 原子写入（tmp 写入 + rename，避免并发/中断导致文件损坏）：          */
-/* ------------------------------------------------------------------ */
-
-async function atomicWrite(targetPath, list) {
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  const tmp = path.join(
-    path.dirname(targetPath),
-    `.${path.basename(targetPath)}.${Date.now()}.${process.pid}.tmp`
-  );
-  const data = JSON.stringify(list ?? [], null, 2) + os.EOL;
-  await fs.writeFile(tmp, data, "utf-8");
-  await fs.rename(tmp, targetPath);
-}
-
-export async function writeVisibleHashtagAtomic(list) {
-  await ensureVisibleHashtagFile();
-  await atomicWrite(VISIBLE_HASHTAG_PATH, list);
-}
-
-export async function writeVisibleTagAtomic(list) {
-  await ensureVisibleTagFile();
-  await atomicWrite(VISIBLE_TAG_PATH, list);
-}
-
-export async function writeVisibleAtomic(list) {
-  await ensureVisibleFile();
-  await atomicWrite(VISIBLE_PATH, list);
-}
+export const VISIBLE_HASHTAG_PATH = VISIBLE_HASH_PATH;
+export async function ensureVisibleHashtagFile() { return ensureVisibleHashFile(); }
