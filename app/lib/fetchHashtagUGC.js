@@ -42,7 +42,7 @@ async function edgePage({hashtagId, edge="top_media", limit=10, after=""}){
   const u = new URL(`https://graph.facebook.com/v23.0/${hashtagId}/${edge}`);
   u.searchParams.set("user_id", IG_ID);
   // 加上 username 便于后台展示（不强依赖）
-  u.searchParams.set("fields", "id,caption,media_type,media_url,permalink,timestamp,username");
+  u.searchParams.set("fields", "id,caption,media_type,media_url,permalink,timestamp");
   u.searchParams.set("limit", String(limit));
   if (after) u.searchParams.set("after", after);
   u.searchParams.set("access_token", PAGE_TOKEN);
