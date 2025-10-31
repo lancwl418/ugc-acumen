@@ -53,7 +53,7 @@ async function edgePage({hashtagId, edge="top_media", limit=10, after="", nextUr
   } else {
     const url = new URL(`https://graph.facebook.com/v23.0/${hashtagId}/${edge}`);
     url.searchParams.set("user_id", IG_ID);
-    url.searchParams.set("fields", "id,caption,media_type,media_url,permalink,timestamp,username");
+    url.searchParams.set("fields", "id,caption,media_type,media_url,permalink,timestamp");
     url.searchParams.set("limit", String(limit));
     if (after) url.searchParams.set("after", after);
     url.searchParams.set("access_token", PAGE_TOKEN);
