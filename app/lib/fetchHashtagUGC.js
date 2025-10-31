@@ -85,6 +85,9 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
 
     await Promise.all(pairs.map(async ({tag, id}) => {
       const prev = cursors?.[tag] || {};
+      const topAfter = normalizeAfter(prev.topAfter || prev.topNext || "");
+      const recentAfter = normalizeAfter(prev.recentAfter || prev.recentNext || "");
+
       const [top, rec] = await Promise.all([
         edgePage({
           hashtagId: id,
@@ -107,10 +110,8 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
       bucket.push(...(top.items || []), ...(rec.items || []));
 
       next[tag] = {
-        topAfter:    top.nextAfter || "",
-        topNext:     top.nextUrl   || "",
-        recentAfter: rec.nextAfter || "",
-        recentNext:  rec.nextUrl   || ""
+        topAfter: top.nextAfter || "",   topNext: top.nextUrl || "",
+        recentAfter: recent.nextAfter || "", recentNext: recent.nextUrl || "",
       };
     }));
 
@@ -141,6 +142,20 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
 
     return { items, nextCursors: next };
   });
+}
+
+function normalizeAfter(v) {
+  const s = String(v || "");
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) {
+    try {
+      const u = new URL(s);
+      return u.searchParams.get("after") || "";
+    } catch {
+      return "";
+    }
+  }
+  return s; // 已经是纯 after 光标
 }
 
 
