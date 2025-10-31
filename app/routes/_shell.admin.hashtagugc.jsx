@@ -19,11 +19,13 @@ import {
   InlineStack,
   BlockStack,
   SkeletonBodyText,
+  Banner,
 } from "@shopify/polaris";
 import { Suspense, useMemo, useState, useEffect, useRef } from "react";
 import fs from "fs/promises";
 import path from "path";
 
+// ✅ 保持你原来的导入，不改 persistPaths
 import {
   VISIBLE_HASH_PATH,
   ensureVisibleHashFile,
@@ -64,9 +66,18 @@ function writeStackSS(key, arr) {
 /* ---------- loader ---------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
-  const tags = url.searchParams.get("tags") || ""; // 逗号分隔
+
+  // ✅ 统一计算 tags：URL 覆盖 env（不改 fetch/lib）
+  const envTags = (process.env.HASHTAGS || process.env.HASHTAG || "").trim();
+  const effectiveTags = (url.searchParams.get("tags") || envTags || "").trim();
+
   const hSize = Math.min(40, Math.max(6, Number(url.searchParams.get("hSize") || 12)));
-  const c = url.searchParams.get("c") || "";       // base64 的 per-tag cursors
+  const c = url.searchParams.get("c") || ""; // base64 的 per-tag cursors
+
+  // ✅ 缺失 env 的提示（仅用于 UI banner）
+  const envMissing = [];
+  if (!process.env.INSTAGRAM_IG_ID) envMissing.push("INSTAGRAM_IG_ID");
+  if (!process.env.PAGE_TOKEN)      envMissing.push("PAGE_TOKEN");
 
   await ensureVisibleHashFile();
   const [hashVisible, products] = await Promise.all([
@@ -77,24 +88,25 @@ export async function loader({ request }) {
   const cursors = c ? b64d(c) : {};
   const hashtagPromise = (async () => {
     try {
-      const page = await fetchHashtagUGCPage({ tags, limit: hSize, cursors });
-      return { items: page.items || [], nextCursors: page.nextCursors || {}, pageSize: hSize, tags };
+      const page = await fetchHashtagUGCPage({ tags: effectiveTags, limit: hSize, cursors });
+      return { items: page.items || [], nextCursors: page.nextCursors || {}, pageSize: hSize, tags: effectiveTags };
     } catch {
-      return { items: [], nextCursors: {}, pageSize: hSize, tags };
+      return { items: [], nextCursors: {}, pageSize: hSize, tags: effectiveTags };
     }
   })();
 
   return defer(
-    { hashtag: hashtagPromise, visible: hashVisible, products },
+    { hashtag: hashtagPromise, visible: hashVisible, products, envMissing, effectiveTags },
     { headers: { "Cache-Control": "private, max-age=30" } }
   );
 }
 
-/* ---------- action ---------- */
+/* ---------- action（保持你原样） ---------- */
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
 
+  // 一键刷新所有 visible
   if (op === "refreshVisibleAll") {
     await ensureVisibleHashFile();
     let visible = [];
@@ -120,16 +132,18 @@ export async function action({ request }) {
       if (!hit) {
         return { ...v, lastRefreshedAt: nowISO, lastRefreshError: v.lastRefreshError ?? null };
       }
+      const nextMedia  = hit.media_url  || v.media_url  || "";
+      const nextThumb  = (hit.thumbnail_url ?? v.thumbnail_url) ?? null;
       const changed =
-        (hit.media_url && hit.media_url !== v.media_url) ||
-        (hit.thumbnail_url && hit.thumbnail_url !== v.thumbnail_url) ||
+        (nextMedia && nextMedia !== v.media_url) ||
+        (nextThumb && nextThumb !== v.thumbnail_url) ||
         (hit.media_type && hit.media_type !== v.media_type);
 
       return {
         ...v,
         media_type:    hit.media_type || v.media_type,
-        media_url:     hit.media_url  || v.media_url,
-        thumbnail_url: hit.thumbnail_url ?? v.thumbnail_url ?? null,
+        media_url:     nextMedia,
+        thumbnail_url: nextThumb,
         caption:       hit.caption ?? v.caption,
         permalink:     hit.permalink || v.permalink,
         timestamp:     hit.timestamp || v.timestamp,
@@ -159,6 +173,7 @@ export async function action({ request }) {
     });
   }
 
+  // 刷新“勾选的” visible
   if (op === "refreshVisible") {
     const picked = fd.getAll("ugc_entry").map((s) => JSON.parse(s));
     const idSet = new Set(picked.map((e) => String(e.id)));
@@ -173,9 +188,19 @@ export async function action({ request }) {
       if (!idSet.has(String(v.id))) { updated.push(v); continue; }
       try {
         const fresh = await refreshMediaUrlByHashtag(v, { per: 50, maxScan: 6000, hardPageCap: 200 });
-        const found = (fresh.media_url && fresh.media_url !== v.media_url) ||
-                      (fresh.thumbnail_url && fresh.thumbnail_url !== v.thumbnail_url);
-        updated.push({ ...fresh, lastRefreshedAt: nowISO, ...(found ? { lastFoundAt: nowISO } : {}) });
+        const nextMedia = fresh.media_url || v.media_url || "";
+        const nextThumb = (fresh.thumbnail_url ?? v.thumbnail_url) ?? null;
+        const found = (nextMedia && nextMedia !== v.media_url) ||
+                      (nextThumb && nextThumb !== v.thumbnail_url);
+        updated.push({
+          ...v,
+          ...fresh,
+          media_url: nextMedia,
+          thumbnail_url: nextThumb,
+          lastRefreshedAt: nowISO,
+          ...(found ? { lastFoundAt: nowISO } : {}),
+          lastRefreshError: null,
+        });
       } catch {
         updated.push({ ...v, lastRefreshedAt: nowISO, lastRefreshError: "fetch_failed" });
       }
@@ -185,6 +210,7 @@ export async function action({ request }) {
     return json({ ok: true, op: "refreshVisible", refreshed: idSet.size, total: updated.length });
   }
 
+  // 保存（merge/replace）
   const mode = String(fd.get("mode") || "merge").toLowerCase();
 
   const entries = fd.getAll("ugc_entry").map((s) => {
@@ -200,7 +226,7 @@ export async function action({ request }) {
       thumbnail_url: e.thumbnail_url || "",
       caption: e.caption || "",
       permalink: e.permalink || "",
-      hashtag: String(e.hashtag || "").replace(/^#/, ""),
+      hashtag: String(e.hashtag || "").replace(/^#/, ""), // 保持你的存储
     };
   });
 
@@ -227,7 +253,7 @@ export async function action({ request }) {
 
 /* ---------- page ---------- */
 export default function AdminHashtagUGC() {
-  const data = useLoaderData(); // { hashtag: Promise, visible, products }
+  const data = useLoaderData(); // { hashtag: Promise, visible, products, envMissing, effectiveTags }
   const saver = useFetcher();
   const navigation = useNavigation();
 
@@ -235,8 +261,24 @@ export default function AdminHashtagUGC() {
     <Page>
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h1" variant="headingLg">UGC Admin — Hashtags</Text>
-        <Text as="span" tone="subdued">前端只读 visible_hashtag_ugc.json</Text>
+        <Text as="span" tone="subdued">前端只读 visible_hashtag.json</Text>
       </InlineStack>
+
+      {/* 顶部提示：缺 env / 没 tags */}
+      {(data?.envMissing?.length > 0) && (
+        <div style={{ marginTop: 12 }}>
+          <Banner tone="critical" title="Missing Instagram credentials">
+            <p>Missing env: {data.envMissing.join(", ")}。请在环境变量中设置后刷新。</p>
+          </Banner>
+        </div>
+      )}
+      {(!data?.effectiveTags || !String(data.effectiveTags).trim()) && (
+        <div style={{ marginTop: 12 }}>
+          <Banner tone="warning" title="No hashtags configured">
+            <p>请在 URL 添加 <code>?tags=yourtag</code> 或设置环境变量 <code>HASHTAGS</code>。</p>
+          </Banner>
+        </div>
+      )}
 
       <div style={{ display: "flex", flexDirection: "column", minHeight: "calc(100vh - 120px)", marginTop: 16 }}>
         <div style={{ flex: "1 1 auto" }}>
@@ -244,6 +286,14 @@ export default function AdminHashtagUGC() {
             <Await resolve={data.hashtag}>
               {(h) => (
                 <>
+                  {Array.isArray(h.items) && h.items.length === 0 && (
+                    <div style={{ marginBottom: 12 }}>
+                      <Banner tone="info" title="No items returned">
+                        <p>当前标签：{h.tags || "(未设置)"}。如刚配置 token 或标签，尝试刷新或换个标签测试。</p>
+                      </Banner>
+                    </div>
+                  )}
+
                   <BlockStack gap="400" id="tab-hashtags">
                     <Section
                       title={`Hashtags (${h.tags || ""})`}
@@ -271,36 +321,24 @@ export default function AdminHashtagUGC() {
   );
 }
 
-/* ---------- Pager (FIXED) ---------- */
+/* ---------- Pager ---------- */
 function Pager({ view, routeLoading, hash, stackKey }) {
   const navigate = useNavigate();
   const location = useLocation();
   const navigation = useNavigation();
   const [busy, setBusy] = useState(false);
 
-  const hasNext = useMemo(() => {
-    const nc = view?.nextCursors || {};
-    return Object.values(nc).some(v => v && typeof v.topAfter === "string" && v.topAfter.length > 0);
-  }, [view]);
-
   const canPrev = (readStackSS(stackKey).length > 0);
 
   const goNext = () => {
     if (routeLoading || busy) return;
-    const usp = new URLSearchParams(location.search);
-    const currentC = usp.get("c") || "";
-    const nextC = b64e(view?.nextCursors || {});
-    // 无下一页或 next 与当前相同 -> 直接返回并清 busy（避免一直 loading）
-    if (!hasNext || nextC === currentC) {
-      setBusy(false);
-      return;
-    }
     setBusy(true);
+    const usp = new URLSearchParams(location.search);
     const stack = readStackSS(stackKey);
-    stack.push(currentC);
+    stack.push(usp.get("c") || "");
     writeStackSS(stackKey, stack);
-    usp.set("c", nextC);
-    usp.set("hSize", String(view?.pageSize || 12));
+    usp.set("c", b64e(view.nextCursors || {}));
+    usp.set("hSize", String(view.pageSize || 12));
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
 
@@ -314,13 +352,11 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     const usp = new URLSearchParams(location.search);
     if (prevC) usp.set("c", prevC);
     else usp.delete("c");
-    usp.set("hSize", String(view?.pageSize || 12));
+    usp.set("hSize", String(view.pageSize || 12));
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
 
-  useEffect(() => {
-    if (navigation.state === "idle") setBusy(false);
-  }, [navigation.state]);
+  useEffect(() => { if (navigation.state === "idle") setBusy(false); }, [navigation.state]);
 
   return (
     <div style={{ borderTop: "1px solid var(--p-color-border, #e1e3e5)", padding: "12px 0", marginTop: 16 }}>
@@ -328,12 +364,7 @@ function Pager({ view, routeLoading, hash, stackKey }) {
         <Button onClick={goPrev} disabled={!canPrev || routeLoading || busy} loading={routeLoading || busy}>
           Prev page
         </Button>
-        <Button
-          primary
-          onClick={goNext}
-          disabled={!hasNext || routeLoading || busy}
-          loading={routeLoading || busy}
-        >
+        <Button primary onClick={goNext} disabled={routeLoading || busy} loading={routeLoading || busy}>
           Next page
         </Button>
       </InlineStack>
@@ -459,7 +490,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                     />
                     <Select
                       label="Linked Product"
-                      options={products.map((p) => ({ label: p.title, value: p.handle }))}
+                      options={Array.isArray(products) ? products.map((p) => ({ label: p.title, value: p.handle })) : []}
                       value={chosenProducts[0] || ""}
                       onChange={(v) => changeProducts(item.id, v)}
                     />
@@ -491,7 +522,6 @@ function Section({ title, source, pool, visible, products, saver }) {
   );
 }
 
-/* ---------- Skeleton ---------- */
 function GridSkeleton() {
   return (
     <div
@@ -514,7 +544,6 @@ function GridSkeleton() {
   );
 }
 
-/* ---------- helpers ---------- */
 function seedToVisible(seed) {
   return {
     category: "camping",
