@@ -1,4 +1,3 @@
-// app/routes/_shell.admin.hashtagugc.jsx
 import { defer, json } from "@remix-run/node";
 import {
   useLoaderData,
@@ -37,6 +36,7 @@ import {
   scanHashtagsUntil,
 } from "../lib/fetchHashtagUGC.js";
 
+/* ---------- constants ---------- */
 const CATEGORY_OPTIONS = [
   { label: "Camping Life", value: "camping" },
   { label: "Off-Road", value: "off-road" },
@@ -49,37 +49,34 @@ const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
 /* ---------- utils ---------- */
+/** 前端/后端都可用的 b64（避免 Buffer 浏览器报错） */
+function b64e(obj) {
+  try {
+    const s = JSON.stringify(obj || {});
+    if (typeof window !== "undefined" && window.btoa) {
+      return window.btoa(unescape(encodeURIComponent(s)));
+    }
+    // server
+    // eslint-disable-next-line no-undef
+    return Buffer.from(s, "utf-8").toString("base64");
+  } catch { return ""; }
+}
+function b64d(s) {
+  try {
+    const raw = String(s || "");
+    if (!raw) return {};
+    if (typeof window !== "undefined" && window.atob) {
+      return JSON.parse(decodeURIComponent(escape(window.atob(raw))));
+    }
+    // server
+    // eslint-disable-next-line no-undef
+    return JSON.parse(Buffer.from(raw, "base64").toString("utf-8"));
+  } catch { return {}; }
+}
 async function readJsonSafe(file, fallback = "[]") {
   try { return JSON.parse((await fs.readFile(file, "utf-8")) || fallback); }
   catch { return JSON.parse(fallback); }
 }
-function b64e(obj) {
-  const json = JSON.stringify(obj || {});
-  if (typeof window === "undefined") {
-    // Node / SSR
-    return Buffer.from(json, "utf-8").toString("base64url");
-  }
-  // Browser
-  const b64 = btoa(unescape(encodeURIComponent(json))); // base64
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, ""); // base64url
-}
-
-function b64d(s) {
-  try {
-    const input = String(s || "");
-    if (typeof window === "undefined") {
-      // Node / SSR
-      return JSON.parse(Buffer.from(input, "base64url").toString("utf-8") || "{}");
-    }
-    // Browser
-    const b64 = input.replace(/-/g, "+").replace(/_/g, "/");
-    const json = decodeURIComponent(escape(atob(b64)));
-    return JSON.parse(json || "{}");
-  } catch {
-    return {};
-  }
-}
-
 function readStackSS(key) {
   try { const raw = sessionStorage.getItem(key); return raw ? JSON.parse(raw) : []; }
   catch { return []; }
@@ -92,14 +89,12 @@ function writeStackSS(key, arr) {
 export async function loader({ request }) {
   const url = new URL(request.url);
 
-  // ✅ 统一计算 tags：URL 覆盖 env（不改 fetch/lib）
   const envTags = (process.env.HASHTAGS || process.env.HASHTAG || "").trim();
   const effectiveTags = (url.searchParams.get("tags") || envTags || "").trim();
 
   const hSize = Math.min(40, Math.max(6, Number(url.searchParams.get("hSize") || 12)));
   const c = url.searchParams.get("c") || ""; // base64 的 per-tag cursors
 
-  // ✅ 缺失 env 的提示（仅用于 UI banner）
   const envMissing = [];
   if (!process.env.INSTAGRAM_IG_ID) envMissing.push("INSTAGRAM_IG_ID");
   if (!process.env.PAGE_TOKEN)      envMissing.push("PAGE_TOKEN");
@@ -126,12 +121,11 @@ export async function loader({ request }) {
   );
 }
 
-/* ---------- action（保持你原样） ---------- */
+/* ---------- action ---------- */
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
 
-  // 一键刷新所有 visible
   if (op === "refreshVisibleAll") {
     await ensureVisibleHashFile();
     let visible = [];
@@ -198,7 +192,6 @@ export async function action({ request }) {
     });
   }
 
-  // 刷新“勾选的” visible
   if (op === "refreshVisible") {
     const picked = fd.getAll("ugc_entry").map((s) => JSON.parse(s));
     const idSet = new Set(picked.map((e) => String(e.id)));
@@ -251,7 +244,7 @@ export async function action({ request }) {
       thumbnail_url: e.thumbnail_url || "",
       caption: e.caption || "",
       permalink: e.permalink || "",
-      hashtag: String(e.hashtag || "").replace(/^#/, ""), // 保持你的存储
+      hashtag: String(e.hashtag || "").replace(/^#/, ""),
     };
   });
 
@@ -289,7 +282,6 @@ export default function AdminHashtagUGC() {
         <Text as="span" tone="subdued">前端只读 visible_hashtag.json</Text>
       </InlineStack>
 
-      {/* 顶部提示：缺 env / 没 tags */}
       {(data?.envMissing?.length > 0) && (
         <div style={{ marginTop: 12 }}>
           <Banner tone="critical" title="Missing Instagram credentials">
@@ -354,14 +346,9 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   const [busy, setBusy] = useState(false);
 
   const canPrev = (readStackSS(stackKey).length > 0);
-  // 只要任一 tag 还有 topAfter 或 recentAfter，就认为能下一页
-  const hasNext = useMemo(() => {
-    const c = view?.nextCursors || {};
-    return Object.values(c).some(v => v && (v.topNext || v.topAfter || v.recentNext || v.recentAfter));
-  }, [view]);
 
   const goNext = () => {
-    if (routeLoading || busy || !hasNext) return;  // ← 没有下一页就不跳
+    if (routeLoading || busy) return;
     setBusy(true);
     const usp = new URLSearchParams(location.search);
     const stack = readStackSS(stackKey);
@@ -394,7 +381,7 @@ function Pager({ view, routeLoading, hash, stackKey }) {
         <Button onClick={goPrev} disabled={!canPrev || routeLoading || busy} loading={routeLoading || busy}>
           Prev page
         </Button>
-        <Button primary onClick={goNext} disabled={!hasNext || routeLoading || busy} loading={routeLoading || busy}>
+        <Button primary onClick={goNext} disabled={routeLoading || busy} loading={routeLoading || busy}>
           Next page
         </Button>
       </InlineStack>

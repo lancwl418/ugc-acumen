@@ -1,4 +1,3 @@
-// app/lib/fetchHashtagUGC.js
 import fetch from "node-fetch";
 
 /** 环境变量 */
@@ -39,25 +38,43 @@ async function getHashtagId(tag){
   return id;
 }
 
-async function edgePage({hashtagId, edge="top_media", limit=10, after="", nextUrl=""}){
-  let url;
+/** 统一把 after/next URL 解析成游标 */
+function normalizeAfter(v) {
+  const s = String(v || "");
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) {
+    try { const u = new URL(s); return u.searchParams.get("after") || ""; }
+    catch { return ""; }
+  }
+  return s;
+}
+
+/** ✅ 支持传 after 或直接传 Graph 的 paging.next URL */
+async function edgePage({
+  hashtagId,
+  edge = "top_media",
+  limit = 10,
+  after = "",
+  nextUrl = ""
+}){
+  let r, j;
+
   if (nextUrl) {
-    // ✅ 直接使用上一次返回的 paging.next 直链，稳定可靠
-    url = new URL(nextUrl);
+    r = await withLimit(() => fetch(nextUrl));
   } else {
-    url = new URL(`https://graph.facebook.com/v23.0/${hashtagId}/${edge}`);
-    url.searchParams.set("user_id", IG_ID);
-    url.searchParams.set("fields", "id,caption,media_type,media_url,permalink,timestamp");
-    url.searchParams.set("limit", String(limit));
-    if (after) url.searchParams.set("after", after);
-    url.searchParams.set("access_token", PAGE_TOKEN);
+    const u = new URL(`https://graph.facebook.com/v23.0/${hashtagId}/${edge}`);
+    u.searchParams.set("user_id", IG_ID);
+    // 注意：hashtag edge 不支持 username 字段
+    u.searchParams.set("fields", "id,caption,media_type,media_url,permalink,timestamp");
+    u.searchParams.set("limit", String(limit));
+    if (after) u.searchParams.set("after", after);
+    u.searchParams.set("access_token", PAGE_TOKEN);
+    r = await withLimit(()=>fetch(u));
   }
 
-  const r = await withLimit(()=>fetch(url));
-  const j = await r.json();
+  j = await r.json();
   if (!r.ok || j?.error) throw new Error(j?.error?.message || `Graph ${r.status}`);
 
-  // ✅ 把 paging.next 也带出来，下一页优先走直链
   return {
     items: j.data || [],
     nextAfter: j?.paging?.cursors?.after || "",
@@ -65,10 +82,9 @@ async function edgePage({hashtagId, edge="top_media", limit=10, after="", nextUr
   };
 }
 
-
 /** ✅ Hashtag 分页（多标签合并，时间排序），返回 {items, nextCursors} */
 export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors={} } = {}) {
-  const key = `h2:${JSON.stringify({tags,limit,cursors})}`; // 改下 key，避免旧缓存干扰
+  const key = `h:${JSON.stringify({tags,limit,cursors})}`;
   return withCache(key, 30_000, async () => {
     if (!IG_ID || !PAGE_TOKEN) return { items: [], nextCursors: {} };
     const list = Array.isArray(tags) ? tags : parseTags(tags);
@@ -77,56 +93,34 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
     const ids = await Promise.all(list.map(getHashtagId));
     const pairs = list.map((t,i)=>({tag:t,id:ids[i]})).filter(p=>p.id);
 
-    const perPerTag = Math.max(3, Math.ceil(limit / Math.max(1, pairs.length)));
-    const half = Math.max(2, Math.ceil(perPerTag / 2));
+    const perPerTag = Math.max(3, Math.ceil(limit / Math.max(1,pairs.length)));
+    const bucket = []; const next = {};
 
-    const bucket = [];
-    const next = {};
-
-    await Promise.all(pairs.map(async ({tag, id}) => {
+    await Promise.all(pairs.map(async ({tag,id})=>{
       const prev = cursors?.[tag] || {};
-      const topAfter = normalizeAfter(prev.topAfter || prev.topNext || "");
-      const recentAfter = normalizeAfter(prev.recentAfter || prev.recentNext || "");
+      const topNextUrl = String(prev.topNext || "");
+      const recNextUrl = String(prev.recentNext || "");
+      const topAfter   = normalizeAfter(prev.topAfter || prev.topNext || "");
+      const recAfter   = normalizeAfter(prev.recentAfter || prev.recentNext || "");
 
+      const half = Math.max(2, Math.ceil(perPerTag/2));
       const [top, rec] = await Promise.all([
-        edgePage({
-          hashtagId: id,
-          edge: "top_media",
-          limit: half,
-          after: prev.topNext ? "" : (prev.topAfter || ""),
-          nextUrl: prev.topNext || ""
-        }),
-        edgePage({
-          hashtagId: id,
-          edge: "recent_media",
-          limit: half,
-          after: prev.recentNext ? "" : (prev.recentAfter || ""),
-          nextUrl: prev.recentNext || ""
-        })
+        edgePage({ hashtagId:id, edge:"top_media",    limit:half, nextUrl: topNextUrl || "", after: topNextUrl ? "" : topAfter }),
+        edgePage({ hashtagId:id, edge:"recent_media", limit:half, nextUrl: recNextUrl || "", after: recNextUrl ? "" : recAfter }),
       ]);
 
-      (top.items || []).forEach(x => x.__hashtag = tag);
-      (rec.items || []).forEach(x => x.__hashtag = tag);
-      bucket.push(...(top.items || []), ...(rec.items || []));
+      (top.items||[]).forEach(x=>x.__hashtag=tag);
+      (rec.items||[]).forEach(x=>x.__hashtag=tag);
+      bucket.push(...(top.items||[]), ...(rec.items||[]));
 
       next[tag] = {
         topAfter: top.nextAfter || "",   topNext: top.nextUrl || "",
-        recentAfter: recent.nextAfter || "", recentNext: recent.nextUrl || "",
+        recentAfter: rec.nextAfter || "", recentNext: rec.nextUrl || "",
       };
     }));
 
-    // 去重 + 时间排序 + 截断
-    const seen = new Set();
-    const merged = [];
-    for (const m of bucket) {
-      const id = String(m?.id || "");
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
-      merged.push(m);
-    }
-
-    const items = merged
-      .sort((a,b)=> new Date(b.timestamp) - new Date(a.timestamp))
+    const items = bucket
+      .sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp))
       .slice(0, limit)
       .map(m => ({
         id: m.id,
@@ -136,28 +130,13 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
         caption: m.caption || "",
         permalink: m.permalink || "",
         timestamp: m.timestamp || "",
-        username: "",              // hashtag 边通常不给 username
+        username: "",              // hashtag edge 不返回 username
         hashtag: m.__hashtag || "",
       }));
 
-    return { items, nextCursors: next };
+    return { items, nextCursors: next, pageSize: limit, tags };
   });
 }
-
-function normalizeAfter(v) {
-  const s = String(v || "");
-  if (!s) return "";
-  if (/^https?:\/\//i.test(s)) {
-    try {
-      const u = new URL(s);
-      return u.searchParams.get("after") || "";
-    } catch {
-      return "";
-    }
-  }
-  return s; // 已经是纯 after 光标
-}
-
 
 /* ====================== Mentions (/tags) 分页 ======================= */
 export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
@@ -179,11 +158,10 @@ export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
     if (!r.ok || j?.error) throw new Error(j?.error?.message || `Graph ${r.status}`);
 
     const items = (j.data || []).map(m => {
-      // 轮播：第一帧兜底
       if (m.media_type === "CAROUSEL_ALBUM" && m.children?.data?.length) {
         const f = m.children.data[0];
         m.media_type = f.media_type || m.media_type;
-        m.media_url = f.media_url || m.media_url;
+        m.media_url  = f.media_url  || m.media_url;
         m.thumbnail_url = f.thumbnail_url || m.thumbnail_url || m.media_url;
       }
       return {
@@ -203,14 +181,9 @@ export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
 }
 
 /* ==================================================================== */
-/* ========== 新：/tags 单条刷新 —— 扫到命中为止 ===================== */
-/* ==================================================================== */
+/* ========== /tags 单条刷新（命中为止） =============================== */
 export async function refreshMediaUrlByTag(entry, {
-  per = 50,              // 每页条数（IG 通常 50 比较稳）
-  maxScan = 5000,        // 最多扫描多少条，防止极端情况
-  hardPageCap = 200,     // 硬性最多翻多少页，双保险
-  retry = 3,             // 瞬时错误重试
-  retryBaseMs = 500,     // 重试的基础退避
+  per = 50, maxScan = 5000, hardPageCap = 200, retry = 3, retryBaseMs = 500,
 } = {}) {
   if (!IG_ID || !USER_TOKEN || !entry || !entry.id) return entry;
 
@@ -234,23 +207,18 @@ export async function refreshMediaUrlByTag(entry, {
     for (let k = 0; k <= retry; k++) {
       r = await withLimit(() => fetch(u));
       j = await r.json();
-      const transient =
-        j?.error?.code === 4 || // rate limit
-        j?.error?.code === 17 || // user request limit
-        j?.error?.code === 32 || // read-only mode
-        r.status >= 500;         // server error
+      const transient = j?.error?.code === 4 || j?.error?.code === 17 || j?.error?.code === 32 || r.status >= 500;
       if (r.ok && !j?.error) break;
       if (k < retry && transient) {
         const backoff = retryBaseMs * Math.pow(2, k);
         await new Promise((res) => setTimeout(res, backoff));
         continue;
       }
-      return entry; // 非瞬时或最终失败：保持原样
+      return entry;
     }
 
     const data = Array.isArray(j?.data) ? j.data : [];
-    scanned += data.length;
-    pageCount++;
+    scanned += data.length; pageCount++;
 
     const hit = data.find((m) => String(m.id) === String(entry.id));
     if (hit) {
@@ -279,12 +247,11 @@ export async function refreshMediaUrlByTag(entry, {
     if (!after) break;
   }
 
-  return entry; // 没命中则保持原样
+  return entry;
 }
 
 /* ==================================================================== */
-/* ========== Hashtag：按 hashtag 扫描刷新指定条目（保留） ============ */
-/* ==================================================================== */
+/* ========== Hashtag 单条刷新（保留） ================================= */
 export async function refreshMediaUrlByHashtag(entry, {
   per = 30, maxScan = 3000, hardPageCap = 200
 } = {}) {
@@ -325,8 +292,7 @@ export async function refreshMediaUrlByHashtag(entry, {
 }
 
 /* ==================================================================== */
-/* ========== 仅当“没有可用媒体”时才补一次（hashtag / mentions） ===== */
-/* ==================================================================== */
+/* ========== 仅当“没有可用媒体”时才补一次 ============================= */
 export async function fillMissingMediaOnce(entry, { source="hashtag" } = {}) {
   if (entry.media_url || entry.thumbnail_url) return entry;
   try {
@@ -341,8 +307,7 @@ export async function fillMissingMediaOnce(entry, { source="hashtag" } = {}) {
 }
 
 /* ==================================================================== */
-/* ========== 可选：按链接导入（若不用 oEmbed，可忽略此函数） ========= */
-/* ==================================================================== */
+/* ========== 可选：按链接导入（oEmbed） =============================== */
 export async function fetchInstagramByPermalink(permalink) {
   const url = String(permalink || "").trim();
   if (!url) throw new Error("Empty permalink");
@@ -397,20 +362,14 @@ export async function fetchInstagramByPermalink(permalink) {
 }
 
 /* ==================================================================== */
-/* ========== 新：一次扫描 /tags，直到命中所有 targetIds 即停 ========= */
-/* ==================================================================== */
+/* ========== 批量扫描（/tags & hashtags） ============================ */
 export async function scanTagsUntil({
-  targetIds,              // Set<string> or string[]
-  per = 50,               // 每页条数
-  maxScan = 10000,        // 最多扫描多少条
-  hardPageCap = 300,      // 最多翻多少页
-  retry = 3,              // 瞬时错误重试
-  retryBaseMs = 500,      // 重试基础退避
+  targetIds, per = 50, maxScan = 10000, hardPageCap = 300, retry = 3, retryBaseMs = 500,
 } = {}) {
   if (!IG_ID || !USER_TOKEN) return { hits: new Map(), scanned: 0, pages: 0, done: true };
 
   const goals = new Set(Array.isArray(targetIds) ? targetIds.map(String) : Array.from(targetIds).map(String));
-  const hits = new Map(); // id -> mediaObject
+  const hits = new Map();
   let after = "";
   let scanned = 0;
   let pages = 0;
@@ -439,14 +398,12 @@ export async function scanTagsUntil({
     }
 
     const data = Array.isArray(j?.data) ? j.data : [];
-    scanned += data.length;
-    pages++;
+    scanned += data.length; pages++;
 
     for (const m of data) {
       const id = String(m.id || "");
       if (!goals.has(id)) continue;
 
-      // 轮播兜底：取第一帧
       if (m.media_type === "CAROUSEL_ALBUM" && m.children?.data?.length) {
         const f = m.children.data[0];
         m.media_type    = f.media_type || m.media_type;
@@ -466,42 +423,34 @@ export async function scanTagsUntil({
       });
 
       goals.delete(id);
-      if (goals.size === 0) break; // ✅ 所有目标已命中，提前结束
+      if (goals.size === 0) break;
     }
 
     if (goals.size === 0) break;
     after = j?.paging?.cursors?.after || "";
-    if (!after) break; // 没有下一页了
+    if (!after) break;
   }
 
   const done = goals.size === 0 || !after;
   return { hits, scanned, pages, done };
 }
 
-/* ==================================================================== */
-/* ========== 新：批量扫描 hashtags，命中所有 targetIds 即停 ========= */
-/* ==================================================================== */
 export async function scanHashtagsUntil({
-  tags = DEFAULT_TAGS,               // string 或 string[]
-  targetIds,                         // Set<string> / string[]
-  per = 50,                          // 每页条数
-  maxScanPerTagPerEdge = 6000,       // 单 tag 单 edge 最大扫描条数
-  hardPageCapPerTagPerEdge = 200,    // 单 tag 单 edge 最大翻页数
+  tags = DEFAULT_TAGS, targetIds, per = 50,
+  maxScanPerTagPerEdge = 6000, hardPageCapPerTagPerEdge = 200,
 } = {}) {
   const tagList = Array.isArray(tags) ? tags : parseTags(tags);
   const goals = new Set(Array.isArray(targetIds) ? targetIds.map(String) : Array.from(targetIds).map(String));
-  const hits = new Map(); // id -> mediaObject
+  const hits = new Map();
 
   if (!IG_ID || !PAGE_TOKEN || !tagList.length) {
     return { hits, done: goals.size === 0, scanned: 0, pages: 0 };
   }
 
   let scanned = 0, pages = 0;
-
   const ids = await Promise.all(tagList.map(getHashtagId));
   const pairs = tagList.map((t,i)=>({tag:t,id:ids[i]})).filter(p=>p.id);
 
-  // 逐个 hashtag：先 top_media，再 recent_media；随时命中完就提前退出
   for (const {tag, id: hid} of pairs) {
     for (const edge of ["top_media", "recent_media"]) {
       let after = "", localScanned = 0, localPages = 0;
