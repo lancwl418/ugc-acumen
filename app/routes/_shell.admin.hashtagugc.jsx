@@ -53,8 +53,33 @@ async function readJsonSafe(file, fallback = "[]") {
   try { return JSON.parse((await fs.readFile(file, "utf-8")) || fallback); }
   catch { return JSON.parse(fallback); }
 }
-function b64e(obj){ return Buffer.from(JSON.stringify(obj||{}), "utf-8").toString("base64url"); }
-function b64d(s){ try{ return JSON.parse(Buffer.from(String(s||""), "base64url").toString("utf-8")||"{}"); }catch{ return {}; } }
+function b64e(obj) {
+  const json = JSON.stringify(obj || {});
+  if (typeof window === "undefined") {
+    // Node / SSR
+    return Buffer.from(json, "utf-8").toString("base64url");
+  }
+  // Browser
+  const b64 = btoa(unescape(encodeURIComponent(json))); // base64
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, ""); // base64url
+}
+
+function b64d(s) {
+  try {
+    const input = String(s || "");
+    if (typeof window === "undefined") {
+      // Node / SSR
+      return JSON.parse(Buffer.from(input, "base64url").toString("utf-8") || "{}");
+    }
+    // Browser
+    const b64 = input.replace(/-/g, "+").replace(/_/g, "/");
+    const json = decodeURIComponent(escape(atob(b64)));
+    return JSON.parse(json || "{}");
+  } catch {
+    return {};
+  }
+}
+
 function readStackSS(key) {
   try { const raw = sessionStorage.getItem(key); return raw ? JSON.parse(raw) : []; }
   catch { return []; }
