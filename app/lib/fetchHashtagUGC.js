@@ -9,7 +9,9 @@ const APP_SECRET = process.env.META_APP_SECRET || "";
 const OEMBED     = (APP_ID && APP_SECRET) ? `${APP_ID}|${APP_SECRET}` : "";
 const DEFAULT_TAGS = (process.env.HASHTAGS || process.env.HASHTAG || "acumencamera");
 
-/* ============== 极简缓存 + 并发限流（保持轻量） ============== */
+const DEBUG = String(process.env.DEBUG_UGC || "") === "1";
+
+/* ============== 轻量缓存 + 并发限流 ============== */
 const mem = new Map(); // key -> {expiry, promise}
 function withCache(key, ms, fn) {
   const now = Date.now();
@@ -49,7 +51,7 @@ function normalizeAfter(v) {
   return s;
 }
 
-/** ✅ 支持传 after 或直接传 Graph 的 paging.next URL */
+/** ✅ 支持 after 或直接传 Graph 的 paging.next URL */
 async function edgePage({
   hashtagId,
   edge = "top_media",
@@ -82,10 +84,10 @@ async function edgePage({
   };
 }
 
-/** ✅ Hashtag 分页（多标签合并，时间排序），返回 {items, nextCursors} */
+/** ✅ Hashtag 分页（多标签合并，时间排序 + 去重 + 游标耗尽标记） */
 export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors={} } = {}) {
   const key = `h:${JSON.stringify({tags,limit,cursors})}`;
-  return withCache(key, 30_000, async () => {
+  return withCache(key, 10_000, async () => { // 调试期把缓存降到 10s
     if (!IG_ID || !PAGE_TOKEN) return { items: [], nextCursors: {} };
     const list = Array.isArray(tags) ? tags : parseTags(tags);
     if (!list.length) return { items: [], nextCursors: {} };
@@ -95,28 +97,67 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
 
     const perPerTag = Math.max(3, Math.ceil(limit / Math.max(1,pairs.length)));
     const bucket = []; const next = {};
+    const seen = new Set(); // 去重
 
     await Promise.all(pairs.map(async ({tag,id})=>{
       const prev = cursors?.[tag] || {};
+      const topDone = !!prev.topDone;
+      const recDone = !!prev.recentDone;
+
+      // 当前轮的配额：若某 edge 已完成，把配额全部给另一侧
+      const qTop = topDone ? 0 : (recDone ? perPerTag : Math.max(2, Math.ceil(perPerTag/2)));
+      const qRec = recDone ? 0 : (topDone ? perPerTag : Math.max(2, Math.ceil(perPerTag/2)));
+
       const topNextUrl = String(prev.topNext || "");
       const recNextUrl = String(prev.recentNext || "");
       const topAfter   = normalizeAfter(prev.topAfter || prev.topNext || "");
       const recAfter   = normalizeAfter(prev.recentAfter || prev.recentNext || "");
 
-      const half = Math.max(2, Math.ceil(perPerTag/2));
-      const [top, rec] = await Promise.all([
-        edgePage({ hashtagId:id, edge:"top_media",    limit:half, nextUrl: topNextUrl || "", after: topNextUrl ? "" : topAfter }),
-        edgePage({ hashtagId:id, edge:"recent_media", limit:half, nextUrl: recNextUrl || "", after: recNextUrl ? "" : recAfter }),
-      ]);
+      let top = { items: [], nextAfter: "", nextUrl: "" };
+      let rec = { items: [], nextAfter: "", nextUrl: "" };
+
+      if (qTop > 0) {
+        top = await edgePage({
+          hashtagId:id, edge:"top_media", limit:qTop,
+          nextUrl: topNextUrl || "", after: topNextUrl ? "" : topAfter
+        });
+      }
+      if (qRec > 0) {
+        rec = await edgePage({
+          hashtagId:id, edge:"recent_media", limit:qRec,
+          nextUrl: recNextUrl || "", after: recNextUrl ? "" : recAfter
+        });
+      }
 
       (top.items||[]).forEach(x=>x.__hashtag=tag);
       (rec.items||[]).forEach(x=>x.__hashtag=tag);
-      bucket.push(...(top.items||[]), ...(rec.items||[]));
+
+      for (const it of [...(top.items||[]), ...(rec.items||[])]) {
+        if (seen.has(it.id)) continue;
+        seen.add(it.id);
+        bucket.push(it);
+      }
+
+      // 计算“是否已耗尽”
+      const topNoMore = !top.nextAfter && !top.nextUrl && qTop > 0;
+      const recNoMore = !rec.nextAfter && !rec.nextUrl && qRec > 0;
 
       next[tag] = {
-        topAfter: top.nextAfter || "",   topNext: top.nextUrl || "",
-        recentAfter: rec.nextAfter || "", recentNext: rec.nextUrl || "",
+        topAfter: top.nextAfter || "",      topNext: top.nextUrl || "",
+        recentAfter: rec.nextAfter || "",   recentNext: rec.nextUrl || "",
+        topDone: topDone || topNoMore,
+        recentDone: recDone || recNoMore,
       };
+
+      if (DEBUG) {
+        console.log(`[UGC] tag=${tag} qTop=${qTop} qRec=${qRec}`,
+          { inTopAfter: topAfter, inTopNext: topNextUrl, inRecAfter: recAfter, inRecNext: recNextUrl,
+            outTopAfter: top.nextAfter, outTopNext: top.nextUrl,
+            outRecAfter: rec.nextAfter, outRecNext: rec.nextUrl,
+            topDone: next[tag].topDone, recentDone: next[tag].recentDone,
+            pageSize: (top.items?.length||0) + (rec.items?.length||0)
+          });
+      }
     }));
 
     const items = bucket
@@ -134,6 +175,12 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
         hashtag: m.__hashtag || "",
       }));
 
+    if (DEBUG) {
+      console.log(`[UGC] merge out: items=${items.length}`, {
+        first: items[0]?.id, last: items[items.length-1]?.id, nextKeys: Object.keys(next)
+      });
+    }
+
     return { items, nextCursors: next, pageSize: limit, tags };
   });
 }
@@ -141,7 +188,7 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
 /* ====================== Mentions (/tags) 分页 ======================= */
 export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
   const key = `t:${limit}:${after}`;
-  return withCache(key, 30_000, async () => {
+  return withCache(key, 10_000, async () => {
     if (!IG_ID || !USER_TOKEN) return { items: [], nextAfter: "" };
 
     const u = new URL(`https://graph.facebook.com/v23.0/${IG_ID}/tags`);
@@ -304,61 +351,6 @@ export async function fillMissingMediaOnce(entry, { source="hashtag" } = {}) {
       return refreshed || entry;
     }
   } catch { return entry; }
-}
-
-/* ==================================================================== */
-/* ========== 可选：按链接导入（oEmbed） =============================== */
-export async function fetchInstagramByPermalink(permalink) {
-  const url = String(permalink || "").trim();
-  if (!url) throw new Error("Empty permalink");
-  if (!OEMBED) throw new Error("Missing OEMBED token (META_APP_ID|META_APP_SECRET)");
-  if (!USER_TOKEN && !PAGE_TOKEN) throw new Error("Missing IG access token");
-
-  return withCache(`p:${url}`, 30_000, async () => {
-    const oe = new URL("https://graph.facebook.com/v23.0/instagram_oembed");
-    oe.searchParams.set("url", url);
-    oe.searchParams.set("access_token", OEMBED || USER_TOKEN);
-    oe.searchParams.set("omitscript", "true");
-    oe.searchParams.set("hidecaption", "true");
-    const oeRes = await withLimit(()=>fetch(oe));
-    const oeJson = await oeRes.json();
-    if (!oeRes.ok || oeJson?.error) throw new Error(oeJson?.error?.message || `oEmbed failed ${oeRes.status}`);
-    const mediaId = oeJson.media_id;
-    const permalinkCanonical = url;
-    if (!mediaId) throw new Error("No media_id from oEmbed");
-
-    const token = USER_TOKEN || PAGE_TOKEN;
-    const fields =
-      "id,media_type,media_url,thumbnail_url,caption,username,timestamp,permalink,children{media_type,media_url,thumbnail_url}";
-    const mUrl = new URL(`https://graph.facebook.com/v23.0/${encodeURIComponent(mediaId)}`);
-    mUrl.searchParams.set("fields", fields);
-    mUrl.searchParams.set("access_token", token);
-    const mRes = await withLimit(()=>fetch(mUrl));
-    const m = await mRes.json();
-    if (!mRes.ok || m?.error) throw new Error(m?.error?.message || `Graph media ${mRes.status}`);
-
-    let mediaType = m.media_type;
-    let mediaUrl  = m.media_url || "";
-    let thumb     = m.thumbnail_url || "";
-    if (m.media_type === "CAROUSEL_ALBUM" && m.children?.data?.length) {
-      const first = m.children.data[0];
-      mediaType = first.media_type || mediaType;
-      mediaUrl  = first.media_url || mediaUrl;
-      thumb     = first.thumbnail_url || thumb || mediaUrl;
-    }
-
-    return {
-      id: String(m.id),
-      username: m.username || "",
-      timestamp: m.timestamp || "",
-      media_type: mediaType === "VIDEO" ? "VIDEO" : "IMAGE",
-      media_url: mediaUrl || thumb || "",
-      thumbnail_url: thumb || null,
-      caption: m.caption || "",
-      permalink: m.permalink || permalinkCanonical,
-      hashtag: "",
-    };
-  });
 }
 
 /* ==================================================================== */

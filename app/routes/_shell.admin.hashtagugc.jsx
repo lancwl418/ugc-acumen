@@ -110,8 +110,8 @@ export async function loader({ request }) {
     try {
       const page = await fetchHashtagUGCPage({ tags: effectiveTags, limit: hSize, cursors });
       return { items: page.items || [], nextCursors: page.nextCursors || {}, pageSize: hSize, tags: effectiveTags };
-    } catch {
-      return { items: [], nextCursors: {}, pageSize: hSize, tags: effectiveTags };
+    } catch (e) {
+      return { items: [], nextCursors: {}, pageSize: hSize, tags: effectiveTags, error: String(e) };
     }
   })();
 
