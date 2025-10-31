@@ -39,22 +39,40 @@ async function getHashtagId(tag){
   return id;
 }
 async function edgePage({hashtagId, edge="top_media", limit=10, after=""}){
+  // ✅ 如果传进来的是完整 next 直链，直接用它请求
+  if (after && /^https?:\/\//i.test(after)) {
+    const r = await withLimit(()=>fetch(after));
+    const j = await r.json();
+    if (!r.ok || j?.error) throw new Error(j?.error?.message || `Graph ${r.status}`);
+    return {
+      items: j.data || [],
+      nextAfter: j?.paging?.cursors?.after || "",
+      nextUrl: j?.paging?.next || ""       // ✅ 带出直链
+    };
+  }
+
+  // 否则按常规参数拼 URL
   const u = new URL(`https://graph.facebook.com/v23.0/${hashtagId}/${edge}`);
   u.searchParams.set("user_id", IG_ID);
-  // 加上 username 便于后台展示（不强依赖）
   u.searchParams.set("fields", "id,caption,media_type,media_url,permalink,timestamp");
   u.searchParams.set("limit", String(limit));
   if (after) u.searchParams.set("after", after);
   u.searchParams.set("access_token", PAGE_TOKEN);
+
   const r = await withLimit(()=>fetch(u));
   const j = await r.json();
   if (!r.ok || j?.error) throw new Error(j?.error?.message || `Graph ${r.status}`);
-  return { items: j.data || [], nextAfter: j?.paging?.cursors?.after || "" };
+  return {
+    items: j.data || [],
+    nextAfter: j?.paging?.cursors?.after || "",
+    nextUrl: j?.paging?.next || ""         // ✅ 带出直链
+  };
 }
+
 
 /** ✅ Hashtag 分页（多标签合并，时间排序），返回 {items, nextCursors} */
 export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors={} } = {}) {
-  const key = `h2:${JSON.stringify({tags,limit,cursors})}`; // 改个缓存 key，避免老缓存
+  const key = `h2:${JSON.stringify({tags,limit,cursors})}`; // 变个cache key避免旧缓存
   return withCache(key, 30_000, async () => {
     if (!IG_ID || !PAGE_TOKEN) return { items: [], nextCursors: {} };
     const list = Array.isArray(tags) ? tags : parseTags(tags);
@@ -63,48 +81,48 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
     const ids = await Promise.all(list.map(getHashtagId));
     const pairs = list.map((t,i)=>({tag:t,id:ids[i]})).filter(p=>p.id);
 
-    // 平均分配配额；每个 tag 两条 edge，各分一半（至少 2）
-    const perPerTag = Math.max(2, Math.ceil(limit / Math.max(1, pairs.length)));
-    const perEachEdge = Math.max(2, Math.ceil(perPerTag / 2));
-
+    const perPerTag = Math.max(3, Math.ceil(limit / Math.max(1, pairs.length)));
     const bucket = [];
     const next = {};
 
     await Promise.all(pairs.map(async ({tag, id}) => {
-      const topAfter = cursors?.[tag]?.topAfter || "";
-      const recAfter = cursors?.[tag]?.recentAfter || "";
+      // ✅ 优先用上一次保存的直链；无直链再回退 after 游标
+      const prev = cursors?.[tag] || {};
+      const topAfter = prev.topNext || prev.topAfter || "";
+      const recAfter = prev.recentNext || prev.recentAfter || "";
 
-      // 并行取 top & recent
+      const half = Math.max(2, Math.ceil(perPerTag / 2));
+
       const [top, rec] = await Promise.all([
-        edgePage({ hashtagId: id, edge: "top_media",    limit: perEachEdge, after: topAfter }),
-        edgePage({ hashtagId: id, edge: "recent_media", limit: perEachEdge, after: recAfter }),
+        edgePage({ hashtagId:id, edge:"top_media",    limit: half, after: topAfter }),
+        edgePage({ hashtagId:id, edge:"recent_media", limit: half, after: recAfter }),
       ]);
 
-      // 标记 tag
       (top.items || []).forEach(x => x.__hashtag = tag);
       (rec.items || []).forEach(x => x.__hashtag = tag);
-
       bucket.push(...(top.items || []), ...(rec.items || []));
 
+      // ✅ 同时记录直链与游标，下一跳优先直链
       next[tag] = {
         topAfter:    top.nextAfter    || "",
+        topNext:     top.nextUrl      || "",
         recentAfter: rec.nextAfter    || "",
+        recentNext:  rec.nextUrl      || "",
       };
     }));
 
-    // 去重(id) + 时间倒序 + 截断
+    // 去重 + 时间降序 + 截断
     const seen = new Set();
     const merged = [];
     for (const m of bucket) {
-      if (!m || !m.id) continue;
-      const id = String(m.id);
-      if (seen.has(id)) continue;
+      const id = String(m?.id || "");
+      if (!id || seen.has(id)) continue;
       seen.add(id);
       merged.push(m);
     }
 
     const items = merged
-      .sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .sort((a,b)=> new Date(b.timestamp) - new Date(a.timestamp))
       .slice(0, limit)
       .map(m => ({
         id: m.id,
@@ -114,13 +132,14 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
         caption: m.caption || "",
         permalink: m.permalink || "",
         timestamp: m.timestamp || "",
-        username: "",                // hashtag edges 无 username
+        username: "",              // hashtag edges不返回username，保持空串
         hashtag: m.__hashtag || "",
       }));
 
     return { items, nextCursors: next };
   });
 }
+
 
 /* ====================== Mentions (/tags) 分页 ======================= */
 export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
