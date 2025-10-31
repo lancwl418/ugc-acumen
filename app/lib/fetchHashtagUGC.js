@@ -38,41 +38,37 @@ async function getHashtagId(tag){
   if (id) hashtagIdCache.set(tag,id);
   return id;
 }
-async function edgePage({hashtagId, edge="top_media", limit=10, after=""}){
-  // ✅ 如果传进来的是完整 next 直链，直接用它请求
-  if (after && /^https?:\/\//i.test(after)) {
-    const r = await withLimit(()=>fetch(after));
-    const j = await r.json();
-    if (!r.ok || j?.error) throw new Error(j?.error?.message || `Graph ${r.status}`);
-    return {
-      items: j.data || [],
-      nextAfter: j?.paging?.cursors?.after || "",
-      nextUrl: j?.paging?.next || ""       // ✅ 带出直链
-    };
+
+async function edgePage({hashtagId, edge="top_media", limit=10, after="", nextUrl=""}){
+  let url;
+  if (nextUrl) {
+    // ✅ 直接使用上一次返回的 paging.next 直链，稳定可靠
+    url = new URL(nextUrl);
+  } else {
+    url = new URL(`https://graph.facebook.com/v23.0/${hashtagId}/${edge}`);
+    url.searchParams.set("user_id", IG_ID);
+    url.searchParams.set("fields", "id,caption,media_type,media_url,permalink,timestamp");
+    url.searchParams.set("limit", String(limit));
+    if (after) url.searchParams.set("after", after);
+    url.searchParams.set("access_token", PAGE_TOKEN);
   }
 
-  // 否则按常规参数拼 URL
-  const u = new URL(`https://graph.facebook.com/v23.0/${hashtagId}/${edge}`);
-  u.searchParams.set("user_id", IG_ID);
-  u.searchParams.set("fields", "id,caption,media_type,media_url,permalink,timestamp");
-  u.searchParams.set("limit", String(limit));
-  if (after) u.searchParams.set("after", after);
-  u.searchParams.set("access_token", PAGE_TOKEN);
-
-  const r = await withLimit(()=>fetch(u));
+  const r = await withLimit(()=>fetch(url));
   const j = await r.json();
   if (!r.ok || j?.error) throw new Error(j?.error?.message || `Graph ${r.status}`);
+
+  // ✅ 把 paging.next 也带出来，下一页优先走直链
   return {
     items: j.data || [],
     nextAfter: j?.paging?.cursors?.after || "",
-    nextUrl: j?.paging?.next || ""         // ✅ 带出直链
+    nextUrl: j?.paging?.next || ""
   };
 }
 
 
 /** ✅ Hashtag 分页（多标签合并，时间排序），返回 {items, nextCursors} */
 export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors={} } = {}) {
-  const key = `h2:${JSON.stringify({tags,limit,cursors})}`; // 变个cache key避免旧缓存
+  const key = `h2:${JSON.stringify({tags,limit,cursors})}`; // 改下 key，避免旧缓存干扰
   return withCache(key, 30_000, async () => {
     if (!IG_ID || !PAGE_TOKEN) return { items: [], nextCursors: {} };
     const list = Array.isArray(tags) ? tags : parseTags(tags);
@@ -82,36 +78,43 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
     const pairs = list.map((t,i)=>({tag:t,id:ids[i]})).filter(p=>p.id);
 
     const perPerTag = Math.max(3, Math.ceil(limit / Math.max(1, pairs.length)));
+    const half = Math.max(2, Math.ceil(perPerTag / 2));
+
     const bucket = [];
     const next = {};
 
     await Promise.all(pairs.map(async ({tag, id}) => {
-      // ✅ 优先用上一次保存的直链；无直链再回退 after 游标
       const prev = cursors?.[tag] || {};
-      const topAfter = prev.topNext || prev.topAfter || "";
-      const recAfter = prev.recentNext || prev.recentAfter || "";
-
-      const half = Math.max(2, Math.ceil(perPerTag / 2));
-
       const [top, rec] = await Promise.all([
-        edgePage({ hashtagId:id, edge:"top_media",    limit: half, after: topAfter }),
-        edgePage({ hashtagId:id, edge:"recent_media", limit: half, after: recAfter }),
+        edgePage({
+          hashtagId: id,
+          edge: "top_media",
+          limit: half,
+          after: prev.topNext ? "" : (prev.topAfter || ""),
+          nextUrl: prev.topNext || ""
+        }),
+        edgePage({
+          hashtagId: id,
+          edge: "recent_media",
+          limit: half,
+          after: prev.recentNext ? "" : (prev.recentAfter || ""),
+          nextUrl: prev.recentNext || ""
+        })
       ]);
 
       (top.items || []).forEach(x => x.__hashtag = tag);
       (rec.items || []).forEach(x => x.__hashtag = tag);
       bucket.push(...(top.items || []), ...(rec.items || []));
 
-      // ✅ 同时记录直链与游标，下一跳优先直链
       next[tag] = {
-        topAfter:    top.nextAfter    || "",
-        topNext:     top.nextUrl      || "",
-        recentAfter: rec.nextAfter    || "",
-        recentNext:  rec.nextUrl      || "",
+        topAfter:    top.nextAfter || "",
+        topNext:     top.nextUrl   || "",
+        recentAfter: rec.nextAfter || "",
+        recentNext:  rec.nextUrl   || ""
       };
     }));
 
-    // 去重 + 时间降序 + 截断
+    // 去重 + 时间排序 + 截断
     const seen = new Set();
     const merged = [];
     for (const m of bucket) {
@@ -132,7 +135,7 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
         caption: m.caption || "",
         permalink: m.permalink || "",
         timestamp: m.timestamp || "",
-        username: "",              // hashtag edges不返回username，保持空串
+        username: "",              // hashtag 边通常不给 username
         hashtag: m.__hashtag || "",
       }));
 

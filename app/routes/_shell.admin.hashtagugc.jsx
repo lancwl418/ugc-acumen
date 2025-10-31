@@ -330,10 +330,13 @@ function Pager({ view, routeLoading, hash, stackKey }) {
 
   const canPrev = (readStackSS(stackKey).length > 0);
   // 只要任一 tag 还有 topAfter 或 recentAfter，就认为能下一页
-  const hasNext = !!Object.values(view?.nextCursors || {}).find(v => v && (v.topAfter || v.recentAfter));
+  const hasNext = useMemo(() => {
+    const c = view?.nextCursors || {};
+    return Object.values(c).some(v => v && (v.topNext || v.topAfter || v.recentNext || v.recentAfter));
+  }, [view]);
 
   const goNext = () => {
-    if (routeLoading || busy || !hasNext) return;
+    if (routeLoading || busy || !hasNext) return;  // ← 没有下一页就不跳
     setBusy(true);
     const usp = new URLSearchParams(location.search);
     const stack = readStackSS(stackKey);
