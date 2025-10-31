@@ -329,9 +329,11 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   const [busy, setBusy] = useState(false);
 
   const canPrev = (readStackSS(stackKey).length > 0);
+  // 只要任一 tag 还有 topAfter 或 recentAfter，就认为能下一页
+  const hasNext = !!Object.values(view?.nextCursors || {}).find(v => v && (v.topAfter || v.recentAfter));
 
   const goNext = () => {
-    if (routeLoading || busy) return;
+    if (routeLoading || busy || !hasNext) return;
     setBusy(true);
     const usp = new URLSearchParams(location.search);
     const stack = readStackSS(stackKey);
@@ -364,7 +366,7 @@ function Pager({ view, routeLoading, hash, stackKey }) {
         <Button onClick={goPrev} disabled={!canPrev || routeLoading || busy} loading={routeLoading || busy}>
           Prev page
         </Button>
-        <Button primary onClick={goNext} disabled={routeLoading || busy} loading={routeLoading || busy}>
+        <Button primary onClick={goNext} disabled={!hasNext || routeLoading || busy} loading={routeLoading || busy}>
           Next page
         </Button>
       </InlineStack>

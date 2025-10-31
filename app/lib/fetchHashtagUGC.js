@@ -54,7 +54,7 @@ async function edgePage({hashtagId, edge="top_media", limit=10, after=""}){
 
 /** ✅ Hashtag 分页（多标签合并，时间排序），返回 {items, nextCursors} */
 export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors={} } = {}) {
-  const key = `h:${JSON.stringify({tags,limit,cursors})}`;
+  const key = `h2:${JSON.stringify({tags,limit,cursors})}`; // 改个缓存 key，避免老缓存
   return withCache(key, 30_000, async () => {
     if (!IG_ID || !PAGE_TOKEN) return { items: [], nextCursors: {} };
     const list = Array.isArray(tags) ? tags : parseTags(tags);
@@ -63,18 +63,48 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
     const ids = await Promise.all(list.map(getHashtagId));
     const pairs = list.map((t,i)=>({tag:t,id:ids[i]})).filter(p=>p.id);
 
-    const per = Math.max(3, Math.ceil(limit / Math.max(1,pairs.length)));
-    const all = []; const next = {};
-    await Promise.all(pairs.map(async ({tag,id})=>{
-      const after = cursors?.[tag]?.topAfter || "";
-      const p = await edgePage({hashtagId:id, edge:"top_media", limit:per, after});
-      p.items.forEach(x=>x.__hashtag = tag);
-      all.push(...p.items);
-      next[tag] = { topAfter: p.nextAfter || "" };
+    // 平均分配配额；每个 tag 两条 edge，各分一半（至少 2）
+    const perPerTag = Math.max(2, Math.ceil(limit / Math.max(1, pairs.length)));
+    const perEachEdge = Math.max(2, Math.ceil(perPerTag / 2));
+
+    const bucket = [];
+    const next = {};
+
+    await Promise.all(pairs.map(async ({tag, id}) => {
+      const topAfter = cursors?.[tag]?.topAfter || "";
+      const recAfter = cursors?.[tag]?.recentAfter || "";
+
+      // 并行取 top & recent
+      const [top, rec] = await Promise.all([
+        edgePage({ hashtagId: id, edge: "top_media",    limit: perEachEdge, after: topAfter }),
+        edgePage({ hashtagId: id, edge: "recent_media", limit: perEachEdge, after: recAfter }),
+      ]);
+
+      // 标记 tag
+      (top.items || []).forEach(x => x.__hashtag = tag);
+      (rec.items || []).forEach(x => x.__hashtag = tag);
+
+      bucket.push(...(top.items || []), ...(rec.items || []));
+
+      next[tag] = {
+        topAfter:    top.nextAfter    || "",
+        recentAfter: rec.nextAfter    || "",
+      };
     }));
 
-    const items = all
-      .sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp))
+    // 去重(id) + 时间倒序 + 截断
+    const seen = new Set();
+    const merged = [];
+    for (const m of bucket) {
+      if (!m || !m.id) continue;
+      const id = String(m.id);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      merged.push(m);
+    }
+
+    const items = merged
+      .sort((a,b) => new Date(b.timestamp) - new Date(a.timestamp))
       .slice(0, limit)
       .map(m => ({
         id: m.id,
@@ -84,7 +114,7 @@ export async function fetchHashtagUGCPage({ tags=DEFAULT_TAGS, limit=12, cursors
         caption: m.caption || "",
         permalink: m.permalink || "",
         timestamp: m.timestamp || "",
-        username: m.username || "",
+        username: "",                // hashtag edges 无 username
         hashtag: m.__hashtag || "",
       }));
 
