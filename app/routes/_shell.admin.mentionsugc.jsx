@@ -97,14 +97,25 @@ export async function action({ request }) {
     try { visible = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || []; } catch {}
 
     const targetIds = visible.map(v => String(v.id));
+    
+    const safeScan = async () => {
+      try {
+        // ✅ mentions 走 /{ig-id}/tags，必须有 INSTAGRAM_IG_ID + INSTAGRAM_ACCESS_TOKEN
+        return await scanTagsUntil({
+          targetIds,
+          per: 50,
+          maxScan: 10000,
+          hardPageCap: 300,
+        });
+      } catch (e) {
+        console.error("scanTagsUntil failed:", e);
+        return { hits: new Map(), scanned: 0, pages: 0, done: false, error: String(e?.message || e) };
+      }
+    };
+
     const nowISO = new Date().toISOString();
 
-    const { hits, scanned, pages, done } = await scanTagsUntil({
-      targetIds,
-      per: 50,
-      maxScan: 10000,
-      hardPageCap: 300,
-    });
+    const { hits = new Map(), scanned = 0, pages = 0, done = false } = (await safeScan()) || {};
 
     const merged = visible.map(v => {
       const hit = hits.get(String(v.id));
