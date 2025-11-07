@@ -1,40 +1,19 @@
 // app/routes/_shell.admin.mentionsugc.jsx
 import { defer, json } from "@remix-run/node";
 import {
-  useLoaderData,
-  useFetcher,
-  useNavigate,
-  useLocation,
-  useNavigation,
-  Await,
+  useLoaderData, useFetcher, useNavigate, useLocation, useNavigation, Await,
 } from "@remix-run/react";
 import {
-  Page,
-  Card,
-  Text,
-  Checkbox,
-  Button,
-  Select,
-  Tag,
-  InlineStack,
-  BlockStack,
-  SkeletonBodyText,
-  Banner,
-  Badge,
+  Page, Card, Text, Checkbox, Button, Select, Tag, InlineStack,
+  BlockStack, SkeletonBodyText, Banner, Badge,
 } from "@shopify/polaris";
 import { Suspense, useMemo, useState, useEffect, useRef } from "react";
 import fs from "fs/promises";
 import path from "path";
-
-import {
-  VISIBLE_TAG_PATH,
-  ensureVisibleTagFile,
-} from "../lib/persistPaths.js";
-import {
-  fetchTagUGCPage,
-  refreshMediaUrlByTag,
-  scanTagsUntil,
-} from "../lib/fetchHashtagUGC.js";
+import { VISIBLE_TAG_PATH, ensureVisibleTagFile } from "../lib/persistPaths.js";
+import { fetchTagUGCPage, refreshMediaUrlByTag, scanTagsUntil } from "../lib/fetchHashtagUGC.js";
+// ⬇️ 新增
+import { r2PutObject } from "../lib/r2Client.server.js";
 
 const CATEGORY_OPTIONS = [
   { label: "Camping Life", value: "camping" },
@@ -44,33 +23,16 @@ const CATEGORY_OPTIONS = [
   { label: "Documentation", value: "documentation" },
   { label: "Events", value: "events" },
 ];
-
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
-/* ---------- utils ---------- */
 async function readJsonSafe(file, fallback = "[]") {
-  try {
-    return JSON.parse((await fs.readFile(file, "utf-8")) || fallback);
-  } catch {
-    return JSON.parse(fallback);
-  }
+  try { return JSON.parse((await fs.readFile(file, "utf-8")) || fallback); }
+  catch { return JSON.parse(fallback); }
 }
-function readStackSS(key) {
-  try {
-    const raw = sessionStorage.getItem(key);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-function writeStackSS(key, arr) {
-  try {
-    sessionStorage.setItem(key, JSON.stringify(arr));
-  } catch {}
-}
+function readStackSS(key){ try { const raw = sessionStorage.getItem(key); return raw ? JSON.parse(raw) : []; } catch { return []; } }
+function writeStackSS(key, arr){ try { sessionStorage.setItem(key, JSON.stringify(arr)); } catch {} }
 
-/** 前台/后台统一排序：先 featured，再按时间倒序 */
 export function sortFeaturedThenTime(list = []) {
   return [...list].sort((a, b) => {
     const fa = a?.featured ? 1 : 0;
@@ -82,7 +44,6 @@ export function sortFeaturedThenTime(list = []) {
   });
 }
 
-/* ---------- loader ---------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
   const tSize = Math.min(40, Math.max(6, Number(url.searchParams.get("tSize") || 12)));
@@ -113,38 +74,22 @@ export async function loader({ request }) {
   );
 }
 
-/* ---------- action ---------- */
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
 
-  // 一键刷新所有 visible（/tags 扫描到命中为止）
   if (op === "refreshVisibleAll") {
     await ensureVisibleTagFile();
     let visible = [];
-    try {
-      visible = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || [];
-    } catch {}
+    try { visible = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || []; } catch {}
 
     const targetIds = visible.map((v) => String(v.id));
-
     const safeScan = async () => {
       try {
-        return await scanTagsUntil({
-          targetIds,
-          per: 50,
-          maxScan: 10000,
-          hardPageCap: 300,
-        });
+        return await scanTagsUntil({ targetIds, per: 50, maxScan: 10000, hardPageCap: 300 });
       } catch (e) {
         console.error("scanTagsUntil failed:", e);
-        return {
-          hits: new Map(),
-          scanned: 0,
-          pages: 0,
-          done: false,
-          error: String(e?.message || e),
-        };
+        return { hits: new Map(), scanned: 0, pages: 0, done: false, error: String(e?.message || e) };
       }
     };
 
@@ -154,18 +99,13 @@ export async function action({ request }) {
     const merged = visible.map((v) => {
       const hit = hits.get(String(v.id));
       if (!hit) {
-        return {
-          ...v,
-          lastRefreshedAt: nowISO,
-          lastRefreshError: v.lastRefreshError ?? null,
-        };
+        return { ...v, lastRefreshedAt: nowISO, lastRefreshError: v.lastRefreshError ?? null };
       }
       const nextMedia = hit.media_url || v.media_url || "";
       const nextThumb = (hit.thumbnail_url ?? v.thumbnail_url) ?? null;
-      const changed =
-        (nextMedia && nextMedia !== v.media_url) ||
-        (nextThumb && nextThumb !== v.thumbnail_url) ||
-        (hit.media_type && hit.media_type !== v.media_type);
+      const changed = (nextMedia && nextMedia !== v.media_url) ||
+                      (nextThumb && nextThumb !== v.thumbnail_url) ||
+                      (hit.media_type && hit.media_type !== v.media_type);
 
       return {
         ...v,
@@ -183,63 +123,35 @@ export async function action({ request }) {
     });
 
     await fs.writeFile(VISIBLE_TAG_PATH, JSON.stringify(merged, null, 2), "utf-8");
-
     const updatedCount = merged.reduce((n, m, i) => {
       const old = visible[i] || {};
-      return (
-        n + ((m.media_url !== old.media_url) || (m.thumbnail_url !== old.thumbnail_url) ? 1 : 0)
-      );
+      return n + ((m.media_url !== old.media_url) || (m.thumbnail_url !== old.thumbnail_url) ? 1 : 0);
     }, 0);
 
-    return json({
-      ok: true,
-      op: "refreshVisibleAll",
-      total: merged.length,
-      updated: updatedCount,
-      scanned,
-      pages,
-      done,
-    });
+    return json({ ok: true, op: "refreshVisibleAll", total: merged.length, updated: updatedCount, scanned, pages, done });
   }
 
-  // 刷新“勾选的” visible
   if (op === "refreshVisible") {
     const picked = fd.getAll("ugc_entry").map((s) => JSON.parse(s));
     const idSet = new Set(picked.map((e) => String(e.id)));
 
     await ensureVisibleTagFile();
     let visible = [];
-    try {
-      visible = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || [];
-    } catch {}
+    try { visible = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || []; } catch {}
 
     const nowISO = new Date().toISOString();
     const updated = [];
     for (const v of visible) {
-      if (!idSet.has(String(v.id))) {
-        updated.push(v);
-        continue;
-      }
+      if (!idSet.has(String(v.id))) { updated.push(v); continue; }
       try {
-        const fresh = await refreshMediaUrlByTag(v, {
-          per: 50,
-          maxScan: 5000,
-          hardPageCap: 200,
-        });
+        const fresh = await refreshMediaUrlByTag(v, { per: 50, maxScan: 5000, hardPageCap: 200 });
         const nextMedia = fresh.media_url || v.media_url || "";
         const nextThumb = (fresh.thumbnail_url ?? v.thumbnail_url) ?? null;
-        const found =
-          (nextMedia && nextMedia !== v.media_url) ||
-          (nextThumb && nextThumb !== v.thumbnail_url);
+        const found = (nextMedia && nextMedia !== v.media_url) || (nextThumb && nextThumb !== v.thumbnail_url);
 
         updated.push({
-          ...v,
-          ...fresh,
-          media_url: nextMedia,
-          thumbnail_url: nextThumb,
-          lastRefreshedAt: nowISO,
-          ...(found ? { lastFoundAt: nowISO } : {}),
-          lastRefreshError: null,
+          ...v, ...fresh, media_url: nextMedia, thumbnail_url: nextThumb,
+          lastRefreshedAt: nowISO, ...(found ? { lastFoundAt: nowISO } : {}), lastRefreshError: null,
         });
       } catch {
         updated.push({ ...v, lastRefreshedAt: nowISO, lastRefreshError: "fetch_failed" });
@@ -247,17 +159,11 @@ export async function action({ request }) {
     }
 
     await fs.writeFile(VISIBLE_TAG_PATH, JSON.stringify(updated, null, 2), "utf-8");
-    return json({
-      ok: true,
-      op: "refreshVisible",
-      refreshed: idSet.size,
-      total: updated.length,
-    });
+    return json({ ok: true, op: "refreshVisible", refreshed: idSet.size, total: updated.length });
   }
 
-  // 保存可见列表（支持 featured）
+  // ⬇️ 保存可见列表（含 featured）前：上传到 R2
   const mode = String(fd.get("mode") || "merge").toLowerCase();
-
   const entries = fd.getAll("ugc_entry").map((s) => {
     const e = JSON.parse(s);
     return {
@@ -271,48 +177,71 @@ export async function action({ request }) {
       thumbnail_url: e.thumbnail_url || "",
       caption: e.caption || "",
       permalink: e.permalink || "",
-      featured: !!e.featured, // ✅ 新增
+      featured: !!e.featured,
     };
   });
+
+  async function ensureOnCDN(e) {
+    const base = (process.env.CF_R2_PUBLIC_BASE || "").replace(/\/+$/, "");
+    if (base && e.media_url && e.media_url.startsWith(base + "/")) return e;
+
+    const res = await fetch(e.media_url, { redirect: "follow" });
+    if (!res.ok) throw new Error(`fetch media ${e.id} failed: ${res.status}`);
+    const ct = res.headers.get("content-type") || "application/octet-stream";
+    const buf = Buffer.from(await res.arrayBuffer());
+
+    const ext = (() => {
+      if (ct.includes("jpeg")) return "jpg";
+      if (ct.includes("png")) return "png";
+      if (ct.includes("webp")) return "webp";
+      if (ct.includes("gif")) return "gif";
+      if (ct.includes("mp4")) return "mp4";
+      return e.media_type === "VIDEO" ? "mp4" : "bin";
+    })();
+
+    const key = `mentions/${e.username || "author"}/${e.id}.${ext}`;
+    const cdnUrl = await r2PutObject(key, buf, ct);
+    return { ...e, media_url: cdnUrl, thumbnail_url: e.thumbnail_url || cdnUrl };
+  }
+
+  const uploaded = [];
+  for (const it of entries) {
+    try { uploaded.push(await ensureOnCDN(it)); }
+    catch (err) {
+      uploaded.push(it);
+      console.error("R2 upload failed:", it.id, err?.message || err);
+    }
+  }
 
   await ensureVisibleTagFile();
 
   if (mode === "replace") {
     const nowISO = new Date().toISOString();
-    const replaced = entries.map((e) => ({
-      ...e,
-      ...(e.featured ? { featuredAt: e.featuredAt || nowISO } : {}),
+    const replaced = uploaded.map((e) => ({
+      ...e, ...(e.featured ? { featuredAt: e.featuredAt || nowISO } : {}),
     }));
     await fs.writeFile(VISIBLE_TAG_PATH, JSON.stringify(replaced, null, 2), "utf-8");
-    return json({ ok: true, mode: "replace", count: replaced.length });
+    return json({ ok: true, mode: "replace", count: replaced.length, r2: true });
   }
 
-  // merge（upsert by id），只在 false -> true 时写 featuredAt
   let existing = [];
-  try {
-    existing = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || [];
-  } catch {}
+  try { existing = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || []; } catch {}
 
   const nowISO = new Date().toISOString();
   const byId = new Map(existing.map((x) => [String(x.id), x]));
-  for (const e of entries) {
+  for (const e of uploaded) {
     const prev = byId.get(e.id) || {};
     const becameFeatured = (!prev.featured && e.featured);
-    byId.set(e.id, {
-      ...prev,
-      ...e,
-      ...(becameFeatured ? { featuredAt: nowISO } : {}),
-    });
+    byId.set(e.id, { ...prev, ...e, ...(becameFeatured ? { featuredAt: nowISO } : {}) });
   }
 
   const toWrite = Array.from(byId.values());
   await fs.writeFile(VISIBLE_TAG_PATH, JSON.stringify(toWrite, null, 2), "utf-8");
-  return json({ ok: true, mode: "merge", count: entries.length, total: toWrite.length });
+  return json({ ok: true, mode: "merge", count: uploaded.length, total: toWrite.length, r2: true });
 }
 
-/* ---------- page ---------- */
 export default function AdminMentionsUGC() {
-  const data = useLoaderData(); // { tag: Promise, visible, products, envMissing }
+  const data = useLoaderData();
   const saver = useFetcher();
   const navigation = useNavigation();
 
@@ -356,12 +285,7 @@ export default function AdminMentionsUGC() {
                     />
                   </BlockStack>
 
-                  <Pager
-                    view={t}
-                    routeLoading={navigation.state !== "idle"}
-                    hash="#tags"
-                    stackKey="ugc:tStack"
-                  />
+                  <Pager view={t} routeLoading={navigation.state !== "idle"} hash="#tags" stackKey="ugc:tStack" />
                 </>
               )}
             </Await>
@@ -372,7 +296,6 @@ export default function AdminMentionsUGC() {
   );
 }
 
-/* ---------- Pager ---------- */
 function Pager({ view, routeLoading, hash, stackKey }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -388,8 +311,7 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     const stack = readStackSS(stackKey);
     stack.push(usp.get("tAfter") || "");
     writeStackSS(stackKey, stack);
-    if (view.nextAfter) usp.set("tAfter", view.nextAfter);
-    else usp.delete("tAfter");
+    if (view.nextAfter) usp.set("tAfter", view.nextAfter); else usp.delete("tAfter");
     usp.set("tSize", String(view.pageSize || 12));
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
@@ -402,31 +324,23 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     const prevAfter = stack.pop() || "";
     writeStackSS(stackKey, stack);
     const usp = new URLSearchParams(location.search);
-    if (prevAfter) usp.set("tAfter", prevAfter);
-    else usp.delete("tAfter");
+    if (prevAfter) usp.set("tAfter", prevAfter); else usp.delete("tAfter");
     usp.set("tSize", String(view.pageSize || 12));
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
 
-  useEffect(() => {
-    if (navigation.state === "idle") setBusy(false);
-  }, [navigation.state]);
+  useEffect(() => { if (navigation.state === "idle") setBusy(false); }, [navigation.state]);
 
   return (
     <div style={{ borderTop: "1px solid var(--p-color-border, #e1e3e5)", padding: "12px 0", marginTop: 16 }}>
       <InlineStack align="center" gap="200">
-        <Button onClick={goPrev} disabled={!canPrev || routeLoading || busy} loading={routeLoading || busy}>
-          Prev page
-        </Button>
-        <Button primary onClick={goNext} disabled={routeLoading || busy || !view.nextAfter} loading={routeLoading || busy}>
-          Next page
-        </Button>
+        <Button onClick={goPrev} disabled={!canPrev || routeLoading || busy} loading={routeLoading || busy}>Prev page</Button>
+        <Button primary onClick={goNext} disabled={routeLoading || busy || !view.nextAfter} loading={routeLoading || busy}>Next page</Button>
       </InlineStack>
     </div>
   );
 }
 
-/* ---------- Section（含 Featured） ---------- */
 function Section({ title, source, pool, visible, products, saver }) {
   const initialSelected = useMemo(() => {
     const m = new Map();
@@ -478,26 +392,13 @@ function Section({ title, source, pool, visible, products, saver }) {
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h2" variant="headingLg">{title}</Text>
         <InlineStack gap="200">
-          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "saveVisible"; }} primary>
-            Save visible list (mentions)
-          </Button>
-          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisible"; }}>
-            Refresh media URL (checked)
-          </Button>
-          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisibleAll"; }}>
-            Refresh ALL visible
-          </Button>
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "saveVisible"; }} primary>Save visible list (mentions)</Button>
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisible"; }}>Refresh media URL (checked)</Button>
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisibleAll"; }}>Refresh ALL visible</Button>
         </InlineStack>
       </InlineStack>
 
-      <div
-        style={{
-          marginTop: 16,
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
-          gap: 24,
-        }}
-      >
+      <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 24 }}>
         {pool.map((item) => {
           const isVideo = item.media_type === "VIDEO";
           const picked = selected.get(String(item.id));
@@ -520,13 +421,7 @@ function Section({ title, source, pool, visible, products, saver }) {
 
                 <a href={item.permalink} target="_blank" rel="noreferrer">
                   {isVideo ? (
-                    <video
-                      controls
-                      muted
-                      preload="metadata"
-                      playsInline
-                      style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
-                    >
+                    <video controls muted preload="metadata" playsInline style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}>
                       <source src={item.media_url || ""} type="video/mp4" />
                     </video>
                   ) : (
@@ -537,9 +432,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                       decoding="async"
                       referrerPolicy="no-referrer"
                       style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
-                      onError={(e) => {
-                        e.currentTarget.src = TINY;
-                      }}
+                      onError={(e) => { e.currentTarget.src = TINY; }}
                     />
                   )}
                 </a>
@@ -549,25 +442,12 @@ function Section({ title, source, pool, visible, products, saver }) {
                   {item.caption && item.caption.length > 160 ? "…" : ""}
                 </Text>
 
-                <Checkbox
-                  label="Show on site"
-                  checked={isChecked}
-                  onChange={() => toggle(item.id, item)}
-                />
+                <Checkbox label="Show on site" checked={isChecked} onChange={() => toggle(item.id, item)} />
 
                 {isChecked && (
                   <>
-                    <Checkbox
-                      label="Featured（精选，前台置顶显示）"
-                      checked={isFeatured}
-                      onChange={(v) => changeFeatured(item.id, v)}
-                    />
-                    <Select
-                      label="Category"
-                      options={CATEGORY_OPTIONS}
-                      value={category}
-                      onChange={(v) => changeCategory(item.id, v)}
-                    />
+                    <Checkbox label="Featured（精选，前台置顶显示）" checked={isFeatured} onChange={(v) => changeFeatured(item.id, v)} />
+                    <Select label="Category" options={CATEGORY_OPTIONS} value={category} onChange={(v) => changeCategory(item.id, v)} />
                     <Select
                       label="Linked Product"
                       options={Array.isArray(products) ? products.map((p) => ({ label: p.title, value: p.handle })) : []}
@@ -588,7 +468,7 @@ function Section({ title, source, pool, visible, products, saver }) {
                         thumbnail_url: item.thumbnail_url,
                         caption: item.caption,
                         permalink: item.permalink,
-                        featured: isFeatured, // ✅ 带回后端
+                        featured: isFeatured,
                       })}
                     />
                   </>
@@ -602,37 +482,19 @@ function Section({ title, source, pool, visible, products, saver }) {
   );
 }
 
-/* ---------- Skeleton ---------- */
 function GridSkeleton() {
   return (
-    <div
-      style={{
-        marginTop: 16,
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
-        gap: 24,
-      }}
-    >
+    <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 24 }}>
       {Array.from({ length: 12 }).map((_, i) => (
         <Card key={i} padding="400">
-          <div
-            style={{
-              width: "100%",
-              height: 200,
-              background: "var(--p-color-bg-surface-tertiary, #F1F2F4)",
-              borderRadius: 8,
-            }}
-          />
-          <div style={{ marginTop: 12 }}>
-            <SkeletonBodyText lines={2} />
-          </div>
+          <div style={{ width: "100%", height: 200, background: "var(--p-color-bg-surface-tertiary, #F1F2F4)", borderRadius: 8 }} />
+          <div style={{ marginTop: 12 }}><SkeletonBodyText lines={2} /></div>
         </Card>
       ))}
     </div>
   );
 }
 
-/* ---------- helpers ---------- */
 function seedToVisible(seed, prev) {
   return {
     category: prev?.category || "camping",
@@ -645,7 +507,7 @@ function seedToVisible(seed, prev) {
     thumbnail_url: seed.thumbnail_url || "",
     caption: seed.caption || "",
     permalink: seed.permalink || "",
-    featured: !!prev?.featured, // 继承旧的精选状态
+    featured: !!prev?.featured,
     featuredAt: prev?.featuredAt || undefined,
   };
 }

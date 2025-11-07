@@ -1,41 +1,24 @@
 // app/routes/_shell.admin.hashtagugc.jsx
 import { defer, json } from "@remix-run/node";
 import {
-  useLoaderData,
-  useFetcher,
-  useNavigate,
-  useLocation,
-  useNavigation,
-  Await,
+  useLoaderData, useFetcher, useNavigate, useLocation,
+  useNavigation, Await,
 } from "@remix-run/react";
 import {
-  Page,
-  Card,
-  Text,
-  Checkbox,
-  Button,
-  Select,
-  Tag,
-  InlineStack,
-  BlockStack,
-  SkeletonBodyText,
-  Banner,
+  Page, Card, Text, Checkbox, Button, Select, Tag,
+  InlineStack, BlockStack, SkeletonBodyText, Banner,
 } from "@shopify/polaris";
 import { Suspense, useMemo, useState, useEffect, useRef } from "react";
 import fs from "fs/promises";
 import path from "path";
-
-// 不改 persistPaths
 import {
-  VISIBLE_HASH_PATH,
-  ensureVisibleHashFile,
+  VISIBLE_HASH_PATH, ensureVisibleHashFile,
 } from "../lib/persistPaths.js";
-
 import {
-  fetchHashtagUGCPage,
-  refreshMediaUrlByHashtag,
-  scanHashtagsUntil,
+  fetchHashtagUGCPage, refreshMediaUrlByHashtag, scanHashtagsUntil,
 } from "../lib/fetchHashtagUGC.js";
+// ⬇️ 新增
+import { r2PutObject } from "../lib/r2Client.server.js";
 
 const CATEGORY_OPTIONS = [
   { label: "Camping Life", value: "camping" },
@@ -48,35 +31,17 @@ const CATEGORY_OPTIONS = [
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
-/* ---------- utils（浏览器端安全 base64） ---------- */
-function b64e(obj){
-  try { return window.btoa(unescape(encodeURIComponent(JSON.stringify(obj||{})))); }
-  catch { return ""; }
-}
-function b64d(s){
-  try { return JSON.parse(decodeURIComponent(escape(window.atob(String(s||"")))) || "{}"); }
-  catch { return {}; }
-}
-function readStackSS(key) {
-  try { const raw = sessionStorage.getItem(key); return raw ? JSON.parse(raw) : []; }
-  catch { return []; }
-}
-function writeStackSS(key, arr) {
-  try { sessionStorage.setItem(key, JSON.stringify(arr)); } catch {}
-}
+function b64e(obj){ try { return window.btoa(unescape(encodeURIComponent(JSON.stringify(obj||{})))); } catch { return ""; } }
+function readStackSS(key){ try { const raw = sessionStorage.getItem(key); return raw ? JSON.parse(raw) : []; } catch { return []; } }
+function writeStackSS(key, arr){ try { sessionStorage.setItem(key, JSON.stringify(arr)); } catch {} }
 
-/* ---------- loader ---------- */
 export async function loader({ request }) {
   const url = new URL(request.url);
-
-  // 统一计算 tags：URL 覆盖 env
   const envTags = (process.env.HASHTAGS || process.env.HASHTAG || "").trim();
   const effectiveTags = (url.searchParams.get("tags") || envTags || "").trim();
-
   const hSize = Math.min(40, Math.max(6, Number(url.searchParams.get("hSize") || 12)));
-  const c = url.searchParams.get("c") || ""; // base64 的 per-tag cursors
+  const c = url.searchParams.get("c") || "";
 
-  // 缺失 env 提示
   const envMissing = [];
   if (!process.env.INSTAGRAM_IG_ID) envMissing.push("INSTAGRAM_IG_ID");
   if (!process.env.PAGE_TOKEN)      envMissing.push("PAGE_TOKEN");
@@ -87,7 +52,7 @@ export async function loader({ request }) {
     (async ()=>{ try { return JSON.parse(await fs.readFile(path.resolve("public/products.json"), "utf-8")||"[]"); } catch { return []; } })(),
   ]);
 
-  const cursors = c ? JSON.parse(Buffer.from(c, "base64").toString("utf-8")) : {}; // 服务端可用 Buffer
+  const cursors = c ? JSON.parse(Buffer.from(c, "base64").toString("utf-8")) : {};
   const hashtagPromise = (async () => {
     try {
       const page = await fetchHashtagUGCPage({ tags: effectiveTags, limit: hSize, cursors });
@@ -103,7 +68,6 @@ export async function loader({ request }) {
   );
 }
 
-/* ---------- action（与你现有相同，未动） ---------- */
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
@@ -112,43 +76,35 @@ export async function action({ request }) {
     await ensureVisibleHashFile();
     let visible = [];
     try { visible = JSON.parse(await fs.readFile(VISIBLE_HASH_PATH, "utf-8")) || []; } catch {}
-
     const targetIds = visible.map(v => String(v.id));
     const tagSet = new Set(
       visible.map(v => String(v.hashtag || "").replace(/^#/, "")).filter(Boolean)
     );
     const tags = Array.from(tagSet).join(",");
-
     const nowISO = new Date().toISOString();
+
     const { hits, scanned, pages, done } = await scanHashtagsUntil({
-      tags,
-      targetIds,
-      per: 50,
-      maxScanPerTagPerEdge: 6000,
-      hardPageCapPerTagPerEdge: 200,
+      tags, targetIds, per: 50, maxScanPerTagPerEdge: 6000, hardPageCapPerTagPerEdge: 200,
     });
 
     const merged = visible.map(v => {
       const hit = hits.get(String(v.id));
-      if (!hit) {
-        return { ...v, lastRefreshedAt: nowISO, lastRefreshError: v.lastRefreshError ?? null };
-      }
+      if (!hit) return { ...v, lastRefreshedAt: nowISO, lastRefreshError: v.lastRefreshError ?? null };
       const nextMedia  = hit.media_url  || v.media_url  || "";
       const nextThumb  = (hit.thumbnail_url ?? v.thumbnail_url) ?? null;
-      const changed =
-        (nextMedia && nextMedia !== v.media_url) ||
-        (nextThumb && nextThumb !== v.thumbnail_url) ||
-        (hit.media_type && hit.media_type !== v.media_type);
+      const changed = (nextMedia && nextMedia !== v.media_url) ||
+                      (nextThumb && nextThumb !== v.thumbnail_url) ||
+                      (hit.media_type && hit.media_type !== v.media_type);
 
       return {
         ...v,
-        media_type:    hit.media_type || v.media_type,
-        media_url:     nextMedia,
+        media_type: hit.media_type || v.media_type,
+        media_url: nextMedia,
         thumbnail_url: nextThumb,
-        caption:       hit.caption ?? v.caption,
-        permalink:     hit.permalink || v.permalink,
-        timestamp:     hit.timestamp || v.timestamp,
-        username:      hit.username  || v.username,
+        caption: hit.caption ?? v.caption,
+        permalink: hit.permalink || v.permalink,
+        timestamp: hit.timestamp || v.timestamp,
+        username: hit.username || v.username,
         lastRefreshedAt: nowISO,
         ...(changed ? { lastFoundAt: nowISO } : {}),
         lastRefreshError: null,
@@ -156,22 +112,12 @@ export async function action({ request }) {
     });
 
     await fs.writeFile(VISIBLE_HASH_PATH, JSON.stringify(merged, null, 2), "utf-8");
-
     const updatedCount = merged.reduce((n, m, i) => {
       const old = visible[i] || {};
       return n + ((m.media_url !== old.media_url) || (m.thumbnail_url !== old.thumbnail_url) ? 1 : 0);
     }, 0);
 
-    return json({
-      ok: true,
-      op: "refreshVisibleAll",
-      total: merged.length,
-      updated: updatedCount,
-      scanned,
-      pages,
-      done,
-      tagsUsed: tags,
-    });
+    return json({ ok: true, op: "refreshVisibleAll", total: merged.length, updated: updatedCount, scanned, pages, done, tagsUsed: tags });
   }
 
   if (op === "refreshVisible") {
@@ -190,16 +136,10 @@ export async function action({ request }) {
         const fresh = await refreshMediaUrlByHashtag(v, { per: 50, maxScan: 6000, hardPageCap: 200 });
         const nextMedia = fresh.media_url || v.media_url || "";
         const nextThumb = (fresh.thumbnail_url ?? v.thumbnail_url) ?? null;
-        const found = (nextMedia && nextMedia !== v.media_url) ||
-                      (nextThumb && nextThumb !== v.thumbnail_url);
+        const found = (nextMedia && nextMedia !== v.media_url) || (nextThumb && nextThumb !== v.thumbnail_url);
         updated.push({
-          ...v,
-          ...fresh,
-          media_url: nextMedia,
-          thumbnail_url: nextThumb,
-          lastRefreshedAt: nowISO,
-          ...(found ? { lastFoundAt: nowISO } : {}),
-          lastRefreshError: null,
+          ...v, ...fresh, media_url: nextMedia, thumbnail_url: nextThumb,
+          lastRefreshedAt: nowISO, ...(found ? { lastFoundAt: nowISO } : {}), lastRefreshError: null,
         });
       } catch {
         updated.push({ ...v, lastRefreshedAt: nowISO, lastRefreshError: "fetch_failed" });
@@ -210,7 +150,7 @@ export async function action({ request }) {
     return json({ ok: true, op: "refreshVisible", refreshed: idSet.size, total: updated.length });
   }
 
-  // 保存（merge/replace）——与原来一致
+  // ⬇️ 保存（merge/replace）前：把媒体上传到 R2
   const mode = String(fd.get("mode") || "merge").toLowerCase();
   const entries = fd.getAll("ugc_entry").map((s) => {
     const e = JSON.parse(s);
@@ -229,28 +169,59 @@ export async function action({ request }) {
     };
   });
 
+  async function ensureOnCDN(e) {
+    const base = (process.env.CF_R2_PUBLIC_BASE || "").replace(/\/+$/, "");
+    if (base && e.media_url && e.media_url.startsWith(base + "/")) return e;
+
+    const res = await fetch(e.media_url, { redirect: "follow" });
+    if (!res.ok) throw new Error(`fetch media ${e.id} failed: ${res.status}`);
+    const ct = res.headers.get("content-type") || "application/octet-stream";
+    const buf = Buffer.from(await res.arrayBuffer());
+
+    const ext = (() => {
+      if (ct.includes("jpeg")) return "jpg";
+      if (ct.includes("png")) return "png";
+      if (ct.includes("webp")) return "webp";
+      if (ct.includes("gif")) return "gif";
+      if (ct.includes("mp4")) return "mp4";
+      return e.media_type === "VIDEO" ? "mp4" : "bin";
+    })();
+
+    const key = `ugc/${e.hashtag || "tag"}/${e.id}.${ext}`;
+    const cdnUrl = await r2PutObject(key, buf, ct);
+    return { ...e, media_url: cdnUrl, thumbnail_url: e.thumbnail_url || cdnUrl };
+  }
+
+  const uploaded = [];
+  for (const it of entries) {
+    try { uploaded.push(await ensureOnCDN(it)); }
+    catch (err) {
+      uploaded.push(it); // 上传失败则先保留原 URL
+      console.error("R2 upload failed:", it.id, err?.message || err);
+    }
+  }
+
   await ensureVisibleHashFile();
 
   if (mode === "replace") {
-    await fs.writeFile(VISIBLE_HASH_PATH, JSON.stringify(entries, null, 2), "utf-8");
-    return json({ ok: true, mode: "replace", count: entries.length });
+    await fs.writeFile(VISIBLE_HASH_PATH, JSON.stringify(uploaded, null, 2), "utf-8");
+    return json({ ok: true, mode: "replace", count: uploaded.length, r2: true });
   }
 
   let existing = [];
   try { existing = JSON.parse(await fs.readFile(VISIBLE_HASH_PATH, "utf-8")) || []; } catch {}
 
   const merged = new Map(existing.map((x) => [String(x.id), x]));
-  for (const e of entries) {
+  for (const e of uploaded) {
     const prev = merged.get(String(e.id)) || {};
     merged.set(String(e.id), { ...prev, ...e });
   }
 
   const toWrite = Array.from(merged.values());
   await fs.writeFile(VISIBLE_HASH_PATH, JSON.stringify(toWrite, null, 2), "utf-8");
-  return json({ ok: true, mode: "merge", count: entries.length, total: toWrite.length });
+  return json({ ok: true, mode: "merge", count: uploaded.length, total: toWrite.length, r2: true });
 }
 
-/* ---------- Page ---------- */
 export default function AdminHashtagUGC() {
   const data = useLoaderData();
   const saver = useFetcher();
@@ -319,7 +290,6 @@ export default function AdminHashtagUGC() {
   );
 }
 
-/* ---------- Pager（支持 nextUrl & after，禁用态更准确） ---------- */
 function Pager({ view, routeLoading, hash, stackKey }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -327,12 +297,9 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   const [busy, setBusy] = useState(false);
 
   const canPrev = (readStackSS(stackKey).length > 0);
-
   const hasNext = (() => {
     const nc = view?.nextCursors || {};
-    return Object.values(nc).some(v =>
-      (v && (v.topNext || v.recentNext || v.topAfter || v.recentAfter))
-    );
+    return Object.values(nc).some(v => (v && (v.topNext || v.recentNext || v.topAfter || v.recentAfter)));
   })();
 
   const goNext = () => {
@@ -355,8 +322,7 @@ function Pager({ view, routeLoading, hash, stackKey }) {
     const prevC = stack.pop() || "";
     writeStackSS(stackKey, stack);
     const usp = new URLSearchParams(location.search);
-    if (prevC) usp.set("c", prevC);
-    else usp.delete("c");
+    if (prevC) usp.set("c", prevC); else usp.delete("c");
     usp.set("hSize", String(view.pageSize || 12));
     navigate(`?${usp.toString()}${hash}`, { preventScrollReset: true });
   };
@@ -366,18 +332,13 @@ function Pager({ view, routeLoading, hash, stackKey }) {
   return (
     <div style={{ borderTop: "1px solid var(--p-color-border, #e1e3e5)", padding: "12px 0", marginTop: 16 }}>
       <InlineStack align="center" gap="200">
-        <Button onClick={goPrev} disabled={!canPrev || routeLoading || busy} loading={routeLoading || busy}>
-          Prev page
-        </Button>
-        <Button primary onClick={goNext} disabled={!hasNext || routeLoading || busy} loading={routeLoading || busy}>
-          Next page
-        </Button>
+        <Button onClick={goPrev} disabled={!canPrev || routeLoading || busy} loading={routeLoading || busy}>Prev page</Button>
+        <Button primary onClick={goNext} disabled={!hasNext || routeLoading || busy} loading={routeLoading || busy}>Next page</Button>
       </InlineStack>
     </div>
   );
 }
 
-/* ---------- Section（与之前一致） ---------- */
 function Section({ title, source, pool, visible, products, saver }) {
   const initialSelected = useMemo(() => {
     const m = new Map();
@@ -418,26 +379,13 @@ function Section({ title, source, pool, visible, products, saver }) {
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h2" variant="headingLg">{title}</Text>
         <InlineStack gap="200">
-          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "saveVisible"; }} primary>
-            Save visible list (hashtags)
-          </Button>
-          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisible"; }}>
-            Refresh media URL (checked)
-          </Button>
-          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisibleAll"; }}>
-            Refresh ALL visible
-          </Button>
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "saveVisible"; }} primary>Save visible list (hashtags)</Button>
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisible"; }}>Refresh media URL (checked)</Button>
+          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisibleAll"; }}>Refresh ALL visible</Button>
         </InlineStack>
       </InlineStack>
 
-      <div
-        style={{
-          marginTop: 16,
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
-          gap: 24,
-        }}
-      >
+      <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 24 }}>
         {pool.map((item) => {
           const isVideo = item.media_type === "VIDEO";
           const picked = selected.get(item.id);
@@ -459,10 +407,7 @@ function Section({ title, source, pool, visible, products, saver }) {
 
                 <a href={item.permalink} target="_blank" rel="noreferrer">
                   {isVideo ? (
-                    <video
-                      controls muted preload="metadata" playsInline
-                      style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
-                    >
+                    <video controls muted preload="metadata" playsInline style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}>
                       <source src={item.media_url || ""} type="video/mp4" />
                     </video>
                   ) : (
@@ -487,12 +432,7 @@ function Section({ title, source, pool, visible, products, saver }) {
 
                 {isChecked && (
                   <>
-                    <Select
-                      label="Category"
-                      options={CATEGORY_OPTIONS}
-                      value={category}
-                      onChange={(v) => changeCategory(item.id, v)}
-                    />
+                    <Select label="Category" options={CATEGORY_OPTIONS} value={category} onChange={(v) => changeCategory(item.id, v)} />
                     <Select
                       label="Linked Product"
                       options={Array.isArray(products) ? products.map((p) => ({ label: p.title, value: p.handle })) : []}
@@ -529,20 +469,11 @@ function Section({ title, source, pool, visible, products, saver }) {
 
 function GridSkeleton() {
   return (
-    <div
-      style={{
-        marginTop: 16,
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
-        gap: 24,
-      }}
-    >
+    <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 24 }}>
       {Array.from({ length: 12 }).map((_, i) => (
         <Card key={i} padding="400">
           <div style={{ width: "100%", height: 200, background: "var(--p-color-bg-surface-tertiary, #F1F2F4)", borderRadius: 8 }} />
-          <div style={{ marginTop: 12 }}>
-            <SkeletonBodyText lines={2} />
-          </div>
+          <div style={{ marginTop: 12 }}><SkeletonBodyText lines={2} /></div>
         </Card>
       ))}
     </div>
