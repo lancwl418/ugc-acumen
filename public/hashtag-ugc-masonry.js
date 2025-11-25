@@ -45,22 +45,39 @@
   /* ---------------- 样式（含 masonry + 新 modal 的 acumen-* 样式） ---------------- */
   const style = document.createElement("style");
   style.innerHTML = `
-  .ugc-masonry { display: flex;
-  flex-direction: column;
-  gap: 20px; }
-  @media (min-width: 640px) { .ugc-masonry { column-count: 2; } }
-  @media (min-width: 1024px){ .ugc-masonry { column-count: 3; } }
-  .ugc-card { width: 100%;
-  border-radius: 12px;
+  .ugc-masonry { display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px; }
+  @media (min-width: 640px) { .ugc-masonry { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (min-width: 1024px){ .ugc-masonry { grid-template-columns: repeat(4, minmax(0, 1fr));} }
+  .ugc-card { border-radius: 10px;
   overflow: hidden;
-  background: #fff;
-  box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+  background:#fff;
+  box-shadow: 0 2px 8px rgba(0,0,0,.06);
+  display: flex;
+  flex-direction: column;}
+  /* ✅ 关键：媒体区域固定高度/比例 → 同一行高度自然一致 */
+.ugc-open{ width:100%; padding:0; border:0; background:none; cursor:pointer; }
   .ugc-card button { display:block; padding:0; border:0; width:100%; background:none; cursor:pointer; }
-  .ugc-media-wrap { width:100%; display:block; background:#f6f6f6; }
-  .ugc-media-wrap img, .ugc-media-wrap video { width: 100%;
-  height: auto;
-  display: block; }
-  .ugc-caption { padding: 12px; font-size: 14px; line-height: 1.5; color:#333; }
+  .ugc-media-wrap { width:100%;
+  height: 220px;          /* 你可以调：200/240/260 */
+  background:#f6f6f6;
+  overflow: hidden;
+  display:block; }
+  .ugc-media-wrap img, .ugc-media-wrap video { width:100%;
+  height:100%;
+  object-fit: cover;       /* 想保留全图就用 contain */
+  display:block; }
+  .ugc-caption { padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  color:#333;
+
+  display:-webkit-box;
+  -webkit-line-clamp:2;
+  -webkit-box-orient:vertical;
+  overflow:hidden;
+  min-height: 42px;        /* 让每张卡片 caption 占位一致 */ }
   .ugc-loadmore { margin: 16px auto 0; display:block; padding:10px 16px; border:1px solid #ddd; background:#fff; border-radius:6px; cursor:pointer; }
   .ugc-empty { color:#999; font-size:14px; padding:16px 0; text-align:center; }
 
