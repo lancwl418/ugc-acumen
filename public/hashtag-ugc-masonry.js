@@ -45,13 +45,21 @@
   /* ---------------- 样式（含 masonry + 新 modal 的 acumen-* 样式） ---------------- */
   const style = document.createElement("style");
   style.innerHTML = `
-  .ugc-masonry { column-count: 1; column-gap: 16px; }
+  .ugc-masonry { display: flex;
+  flex-direction: column;
+  gap: 20px; }
   @media (min-width: 640px) { .ugc-masonry { column-count: 2; } }
   @media (min-width: 1024px){ .ugc-masonry { column-count: 3; } }
-  .ugc-card { break-inside: avoid; margin-bottom: 16px; border-radius: 8px; overflow: hidden; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+  .ugc-card { width: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0,0,0,.06); }
   .ugc-card button { display:block; padding:0; border:0; width:100%; background:none; cursor:pointer; }
   .ugc-media-wrap { width:100%; display:block; background:#f6f6f6; }
-  .ugc-media-wrap img, .ugc-media-wrap video { width:100%; height:auto; display:block; }
+  .ugc-media-wrap img, .ugc-media-wrap video { width: 100%;
+  height: auto;
+  display: block; }
   .ugc-caption { padding: 12px; font-size: 14px; line-height: 1.5; color:#333; }
   .ugc-loadmore { margin: 16px auto 0; display:block; padding:10px 16px; border:1px solid #ddd; background:#fff; border-radius:6px; cursor:pointer; }
   .ugc-empty { color:#999; font-size:14px; padding:16px 0; text-align:center; }
