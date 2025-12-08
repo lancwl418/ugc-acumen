@@ -9,7 +9,7 @@ export const loader = async () => {
   return json({ apiKey: process.env.SHOPIFY_API_KEY || "" });
 };
 
-// 把 Polaris 的链接组件换成 Remix Link（带 prefetch）
+// Polaris link → Remix Link
 function RemixPolarisLink({ url, children, external, ...rest }) {
   if (external) return <a href={url} {...rest}>{children}</a>;
   return (
@@ -27,9 +27,13 @@ export default function ShellLayout() {
   const items = useMemo(
     () => [
       { label: "Home", url: "/app", match: /^\/app\/?$/ },
+
       { label: "UGC — Hashtags (#)", url: "/admin/hashtagugc", match: /^\/admin\/hashtagugc/ },
       { label: "UGC — Mentions (@)", url: "/admin/mentionsugc", match: /^\/admin\/mentionsugc/ },
       { label: "UGC — Import by Link", url: "/admin/linkimport", match: /^\/admin\/linkimport/ },
+
+      // ⭐ 新增：UGC — My Posts
+      { label: "UGC — My Posts", url: "/admin/ugc", match: /^\/admin\/ugc/ },
     ],
     []
   );
@@ -49,13 +53,4 @@ export default function ShellLayout() {
           </Navigation>
         }
       >
-        {/* 顶部细进度条：路由在加载时显示 */}
         {navigation.state !== "idle" && <Loading />}
-
-        <div style={{ padding: 16 }}>
-          <Outlet />
-        </div>
-      </Frame>
-    </ShopifyAppProvider>
-  );
-}
