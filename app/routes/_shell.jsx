@@ -1,6 +1,12 @@
 // app/routes/_shell.jsx
 import { json } from "@remix-run/node";
-import { Outlet, useLocation, useLoaderData, Link, useNavigation } from "@remix-run/react";
+import {
+  Outlet,
+  useLocation,
+  useLoaderData,
+  Link,
+  useNavigation,
+} from "@remix-run/react";
 import { AppProvider as ShopifyAppProvider } from "@shopify/shopify-app-remix/react";
 import { Frame, Navigation, Loading } from "@shopify/polaris";
 import { useMemo } from "react";
@@ -32,7 +38,7 @@ export default function ShellLayout() {
       { label: "UGC — Mentions (@)", url: "/admin/mentionsugc", match: /^\/admin\/mentionsugc/ },
       { label: "UGC — Import by Link", url: "/admin/linkimport", match: /^\/admin\/linkimport/ },
 
-      // ⭐ 新增：UGC — My Posts
+      // ⭐ 新增菜单项
       { label: "UGC — My Posts", url: "/admin/ugc", match: /^\/admin\/ugc/ },
     ],
     []
@@ -45,7 +51,11 @@ export default function ShellLayout() {
   }));
 
   return (
-    <ShopifyAppProvider isEmbeddedApp apiKey={apiKey} linkComponent={RemixPolarisLink}>
+    <ShopifyAppProvider
+      isEmbeddedApp
+      apiKey={apiKey}
+      linkComponent={RemixPolarisLink}
+    >
       <Frame
         navigation={
           <Navigation location={location.pathname}>
@@ -53,4 +63,13 @@ export default function ShellLayout() {
           </Navigation>
         }
       >
+        {/* 路由加载进度条 */}
         {navigation.state !== "idle" && <Loading />}
+
+        <div style={{ padding: 16 }}>
+          <Outlet />
+        </div>
+      </Frame>
+    </ShopifyAppProvider>
+  );
+}
