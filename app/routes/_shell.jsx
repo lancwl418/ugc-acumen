@@ -37,9 +37,11 @@ export default function ShellLayout() {
       { label: "UGC — Hashtags (#)", url: "/admin/hashtagugc", match: /^\/admin\/hashtagugc/ },
       { label: "UGC — Mentions (@)", url: "/admin/mentionsugc", match: /^\/admin\/mentionsugc/ },
       { label: "UGC — Import by Link", url: "/admin/linkimport", match: /^\/admin\/linkimport/ },
+      { label: "UGC — Creators", url: "/admin/creators", match: /^\/admin\/creators/ },
 
       // ⭐ 新增菜单项
       { label: "UGC — My Posts", url: "/admin/ugc", match: /^\/admin\/ugc/ },
+      
     ],
     []
   );
