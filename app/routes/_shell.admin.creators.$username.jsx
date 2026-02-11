@@ -1,22 +1,17 @@
 import { json } from "@remix-run/node";
 import { useLoaderData } from "@remix-run/react";
-import { Page, BlockStack, Text, Card } from "@shopify/polaris";
-import fs from "fs/promises";
-import { VISIBLE_TAG_PATH } from "../lib/persistPaths.js";
+import {
+  Page, Card, Text, BlockStack, InlineStack, Tag, Badge,
+} from "@shopify/polaris";
+import { getAllMentions } from "../lib/syncAllMentions.server.js";
+
+const TINY =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
 export async function loader({ params }) {
   const username = params.username;
-  let visible = [];
-
-  try {
-    const raw = await fs.readFile(VISIBLE_TAG_PATH, "utf8");
-    visible = JSON.parse(raw || "[]");
-  } catch {
-    visible = [];
-  }
-
-  const posts = visible.filter((p) => p.username === username);
-
+  const all = await getAllMentions();
+  const posts = all.filter((p) => p.username === username);
   return json({ username, posts });
 }
 
@@ -24,29 +19,60 @@ export default function CreatorDetail() {
   const { username, posts } = useLoaderData();
 
   return (
-    <Page title={`@${username} — ${posts.length} posts`}>
-      <BlockStack gap="400">
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-            gap: 16,
-          }}
-        >
-          {posts.map((p) => (
-            <Card key={p.id} padding="300">
-              <img
-                src={p.thumbnail_url || p.media_url}
-                alt=""
-                style={{ width: "100%", borderRadius: 8, objectFit: "cover" }}
-              />
-              <Text as="p" tone="subdued" variant="bodySm" style={{ marginTop: 8 }}>
-                {p.caption?.slice(0, 140)}
-              </Text>
+    <Page title={`@${username} — ${posts.length} posts`} backAction={{ url: "/admin/creators" }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
+          gap: 24,
+          marginTop: 16,
+        }}
+      >
+        {posts.map((item) => {
+          const isVideo = item.media_type === "VIDEO";
+          const thumb = item.thumbnail_url || item.media_url || TINY;
+
+          return (
+            <Card key={item.id} padding="400">
+              <BlockStack gap="200">
+                <InlineStack gap="200" blockAlign="center">
+                  <Tag>@{item.username || "author"}</Tag>
+                  {item.featured && <Badge tone="success">Featured</Badge>}
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    {item.timestamp ? new Date(item.timestamp).toLocaleString() : ""}
+                  </Text>
+                </InlineStack>
+
+                <a href={item.permalink} target="_blank" rel="noreferrer">
+                  {isVideo ? (
+                    <video
+                      controls muted preload="metadata" playsInline
+                      style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
+                    >
+                      <source src={item.media_url || ""} type="video/mp4" />
+                    </video>
+                  ) : (
+                    <img
+                      src={thumb}
+                      alt="UGC"
+                      loading="lazy"
+                      decoding="async"
+                      referrerPolicy="no-referrer"
+                      style={{ width: "100%", height: 200, objectFit: "cover", borderRadius: 8 }}
+                      onError={(e) => { e.currentTarget.src = TINY; }}
+                    />
+                  )}
+                </a>
+
+                <Text variant="bodySm" as="p">
+                  {(item.caption || "No description").slice(0, 160)}
+                  {item.caption && item.caption.length > 160 ? "…" : ""}
+                </Text>
+              </BlockStack>
             </Card>
-          ))}
-        </div>
-      </BlockStack>
+          );
+        })}
+      </div>
     </Page>
   );
 }

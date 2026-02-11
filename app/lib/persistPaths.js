@@ -47,6 +47,24 @@ export async function ensureVisibleHashFile() {
   }
 }
 
+/* ===== All Mentions（creators 用） ===== */
+const MENTIONS_ENV = process.env.ALL_MENTIONS_PATH && process.env.ALL_MENTIONS_PATH.trim();
+const MENTIONS_CANDIDATES = [
+  MENTIONS_ENV ? path.resolve(MENTIONS_ENV) : null,
+  path.resolve("public/data/all_mentions.json"),
+  path.resolve("public/all_mentions.json"),
+].filter(Boolean);
+
+export const ALL_MENTIONS_PATH = pickExisting(MENTIONS_CANDIDATES);
+
+export async function ensureAllMentionsFile() {
+  try { await fs.access(ALL_MENTIONS_PATH); }
+  catch {
+    await fs.mkdir(path.dirname(ALL_MENTIONS_PATH), { recursive: true });
+    await fs.writeFile(ALL_MENTIONS_PATH, "[]", "utf-8");
+  }
+}
+
 /* ===== 兼容旧命名（不要删） ===== */
 export const VISIBLE_PATH = VISIBLE_TAG_PATH;
 export async function ensureVisibleFile() { return ensureVisibleTagFile(); }

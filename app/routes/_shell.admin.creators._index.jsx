@@ -1,30 +1,18 @@
 import { json } from "@remix-run/node";
 import { useLoaderData, Link } from "@remix-run/react";
 import { Page, BlockStack, Card, Text, InlineStack, Avatar } from "@shopify/polaris";
-import fs from "fs/promises";
-import path from "path";
-
-// mentions 可见池路径
-import { VISIBLE_TAG_PATH } from "../lib/persistPaths.js";
+import { getAllMentions } from "../lib/syncAllMentions.server.js";
 
 export async function loader() {
-  let visible = [];
-  try {
-    const raw = await fs.readFile(VISIBLE_TAG_PATH, "utf8");
-    visible = JSON.parse(raw || "[]");
-  } catch {
-    visible = [];
-  }
+  const all = await getAllMentions();
 
-  // 分组：username → posts[]
   const grouped = {};
-  for (const item of visible) {
+  for (const item of all) {
     const user = item.username || "unknown";
     if (!grouped[user]) grouped[user] = [];
     grouped[user].push(item);
   }
 
-  // 按帖子数量倒序
   const creators = Object.entries(grouped)
     .map(([username, posts]) => ({ username, count: posts.length }))
     .sort((a, b) => b.count - a.count);
@@ -39,7 +27,7 @@ export default function CreatorsPage() {
     <Page title="Creators (Mentions)">
       <BlockStack gap="400">
         <Text as="p" tone="subdued">
-          Grouped by username from visible mentions pool.
+          Grouped by username from all mentions. Updated daily.
         </Text>
 
         <div
