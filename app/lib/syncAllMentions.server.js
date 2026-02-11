@@ -7,13 +7,14 @@ import { r2PutObject } from "./r2Client.server.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** 检查文件是否需要刷新（超过 1 天） */
+/** 检查文件是否需要刷新（不存在、为空、或超过 1 天） */
 async function isStale() {
   try {
     const stat = await fs.stat(ALL_MENTIONS_PATH);
+    if (stat.size <= 4) return true; // 空文件或只有 "[]"
     return Date.now() - stat.mtimeMs > DAY_MS;
   } catch {
-    return true; // 文件不存在，需要刷新
+    return true; // 文件不存在
   }
 }
 
