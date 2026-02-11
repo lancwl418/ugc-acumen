@@ -5,6 +5,7 @@ import {
 } from "@shopify/polaris";
 import { useState } from "react";
 import { getAllMentions } from "../lib/syncAllMentions.server.js";
+import { fetchMediaDetail } from "../lib/fetchHashtagUGC.js";
 
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
@@ -13,7 +14,21 @@ export async function loader({ params }) {
   const username = params.username;
   const all = await getAllMentions();
   const posts = all.filter((p) => p.username === username);
-  return json({ username, posts });
+
+  // 逐条拉取 comments 内容（失败不影响整体）
+  const enriched = await Promise.all(
+    posts.map(async (post) => {
+      try {
+        const detail = await fetchMediaDetail(post.id);
+        if (detail?.comments?.length) {
+          return { ...post, comments: detail.comments };
+        }
+      } catch {}
+      return post;
+    })
+  );
+
+  return json({ username, posts: enriched });
 }
 
 export default function CreatorDetail() {

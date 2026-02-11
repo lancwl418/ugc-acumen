@@ -149,7 +149,7 @@ export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
     const u = new URL(`https://graph.facebook.com/v23.0/${IG_ID}/tags`);
     u.searchParams.set(
       "fields",
-      "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,username,like_count,comments_count,comments{id,text,username,timestamp},children{media_type,media_url,thumbnail_url}"
+      "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,username,like_count,comments_count,children{media_type,media_url,thumbnail_url}"
     );
     u.searchParams.set("limit", String(limit));
     if (after) u.searchParams.set("after", after);
@@ -177,12 +177,6 @@ export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
         username: m.username || "",
         like_count: m.like_count ?? 0,
         comments_count: m.comments_count ?? 0,
-        comments: (m.comments?.data || []).map(c => ({
-          id: c.id,
-          text: c.text || "",
-          username: c.username || "",
-          timestamp: c.timestamp || "",
-        })),
       };
     });
 
