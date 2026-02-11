@@ -68,6 +68,26 @@ export default function CreatorDetail() {
                   {(item.caption || "No description").slice(0, 160)}
                   {item.caption && item.caption.length > 160 ? "…" : ""}
                 </Text>
+
+                <InlineStack gap="200" blockAlign="center">
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    {item.like_count ?? 0} likes
+                  </Text>
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    {item.comments?.length ?? 0} comments
+                  </Text>
+                </InlineStack>
+
+                {item.comments?.length > 0 && (
+                  <BlockStack gap="100">
+                    {item.comments.map((c) => (
+                      <Text key={c.id} variant="bodySm" as="p">
+                        <Text as="span" fontWeight="semibold">@{c.username}</Text>{" "}
+                        {c.text}
+                      </Text>
+                    ))}
+                  </BlockStack>
+                )}
               </BlockStack>
             </Card>
           );
