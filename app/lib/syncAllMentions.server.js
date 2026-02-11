@@ -1,24 +1,25 @@
 // app/lib/syncAllMentions.server.js
-// 从 Instagram API 拉全量 mentions，媒体上传 R2，保存到 all_mentions.json
+// 从 Instagram API 拉全量 mentions，媒体上传 R2 creators/ 文件夹，保存到 all_mentions.json
 import fs from "fs/promises";
 import { ALL_MENTIONS_PATH, ensureAllMentionsFile } from "./persistPaths.js";
 import { fetchTagUGCPage } from "./fetchHashtagUGC.js";
 import { r2PutObject } from "./r2Client.server.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const CDN_CONCURRENCY = 3;
 
 /** 检查文件是否需要刷新（不存在、为空、或超过 1 天） */
 async function isStale() {
   try {
     const stat = await fs.stat(ALL_MENTIONS_PATH);
-    if (stat.size <= 4) return true; // 空文件或只有 "[]"
+    if (stat.size <= 4) return true;
     return Date.now() - stat.mtimeMs > DAY_MS;
   } catch {
-    return true; // 文件不存在
+    return true;
   }
 }
 
-/** 上传单条媒体到 R2，返回更新后的 entry */
+/** 上传单条媒体到 R2 creators/ 文件夹 */
 async function ensureOnCDN(entry) {
   const base = (process.env.CF_R2_PUBLIC_BASE || "").replace(/\/+$/, "");
   if (!base) return entry;
@@ -39,18 +40,34 @@ async function ensureOnCDN(entry) {
       return entry.media_type === "VIDEO" ? "mp4" : "jpg";
     })();
 
-    const key = `mentions/${entry.username || "author"}/${entry.id}.${ext}`;
+    const key = `creators/${entry.username || "unknown"}/${entry.id}.${ext}`;
     const cdnUrl = await r2PutObject(key, buf, ct);
     return { ...entry, media_url: cdnUrl, thumbnail_url: entry.thumbnail_url || cdnUrl };
   } catch (err) {
-    console.error("R2 upload failed for", entry.id, err?.message || err);
+    console.error("[syncAllMentions] R2 upload failed:", entry.id, err?.message || err);
     return entry;
   }
 }
 
+/** 并发控制：最多同时 N 个任务 */
+async function mapWithLimit(items, limit, fn) {
+  const results = [];
+  let idx = 0;
+
+  async function worker() {
+    while (idx < items.length) {
+      const i = idx++;
+      results[i] = await fn(items[i]);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return results;
+}
+
 /** 拉取全量 mentions 并持久化 */
-async function fetchAndPersist(maxItems = 500) {
-  console.log("[syncAllMentions] fetchAndPersist started, ALL_MENTIONS_PATH:", ALL_MENTIONS_PATH);
+async function fetchAndPersist(maxItems = 100) {
+  console.log("[syncAllMentions] fetchAndPersist started, path:", ALL_MENTIONS_PATH);
   const all = [];
   let after = "";
 
@@ -69,26 +86,35 @@ async function fetchAndPersist(maxItems = 500) {
   }
 
   console.log(`[syncAllMentions] total fetched from API: ${all.length}`);
+  if (all.length === 0) return [];
 
-  // 读取已有数据，保留已上传到 CDN 的 URL
+  // 读取已有数据
   let existing = [];
   try {
     existing = JSON.parse(await fs.readFile(ALL_MENTIONS_PATH, "utf-8") || "[]");
   } catch {}
-  const existingById = new Map(existing.map((e) => [String(e.id), e]));
 
-  // 合并：新数据更新已有条目，老数据保留（只增不减）
-  const base = (process.env.CF_R2_PUBLIC_BASE || "").replace(/\/+$/, "");
   const mergedById = new Map(existing.map((e) => [String(e.id), e]));
+  const base = (process.env.CF_R2_PUBLIC_BASE || "").replace(/\/+$/, "");
 
+  // 找出需要上传 CDN 的新条目
+  const needCDN = [];
   for (const item of all) {
     const prev = mergedById.get(String(item.id));
     if (prev && prev.media_url && base && prev.media_url.startsWith(base + "/")) {
-      // 已有 CDN URL，保留，更新其他字段
-      mergedById.set(String(item.id), { ...item, media_url: prev.media_url, thumbnail_url: prev.thumbnail_url || prev.media_url });
+      // 已有 CDN URL，更新其他字段
+      mergedById.set(String(item.id), { ...prev, ...item, media_url: prev.media_url, thumbnail_url: prev.thumbnail_url || prev.media_url });
     } else {
-      // 新条目或需要上传到 CDN
-      mergedById.set(String(item.id), await ensureOnCDN(item));
+      needCDN.push(item);
+    }
+  }
+
+  // 并发上传 CDN（限制 3 个同时）
+  if (needCDN.length > 0) {
+    console.log(`[syncAllMentions] uploading ${needCDN.length} items to R2 (concurrency: ${CDN_CONCURRENCY})`);
+    const uploaded = await mapWithLimit(needCDN, CDN_CONCURRENCY, ensureOnCDN);
+    for (const item of uploaded) {
+      mergedById.set(String(item.id), item);
     }
   }
 
@@ -113,7 +139,6 @@ export async function getAllMentions() {
       return await fetchAndPersist();
     } catch (err) {
       console.error("[syncAllMentions] fetchAndPersist failed:", err?.message || err, err?.stack);
-      // 降级：尝试读旧数据
     }
   }
 

@@ -149,7 +149,7 @@ export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
     const u = new URL(`https://graph.facebook.com/v23.0/${IG_ID}/tags`);
     u.searchParams.set(
       "fields",
-      "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,username,like_count,comments_count,children{media_type,media_url,thumbnail_url}"
+      "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,username,children{media_type,media_url,thumbnail_url}"
     );
     u.searchParams.set("limit", String(limit));
     if (after) u.searchParams.set("after", after);
@@ -175,12 +175,36 @@ export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
         permalink: m.permalink || "",
         timestamp: m.timestamp || "",
         username: m.username || "",
-        like_count: m.like_count ?? 0,
-        comments_count: m.comments_count ?? 0,
       };
     });
 
     return { items, nextAfter: j?.paging?.cursors?.after || "" };
+  });
+}
+
+/* ====================== 单条 Media 详情（likes + comments） ======================= */
+export async function fetchMediaDetail(mediaId) {
+  if (!mediaId || !USER_TOKEN) return null;
+  const key = `md:${mediaId}`;
+  return withCache(key, 60_000, async () => {
+    const u = new URL(`https://graph.facebook.com/v23.0/${mediaId}`);
+    u.searchParams.set("fields", "like_count,comments_count,comments{id,text,username,timestamp}");
+    u.searchParams.set("access_token", USER_TOKEN);
+
+    const r = await withLimit(() => fetch(u));
+    const j = await r.json();
+    if (!r.ok || j?.error) return null;
+
+    return {
+      like_count: j.like_count ?? 0,
+      comments_count: j.comments_count ?? 0,
+      comments: (j.comments?.data || []).map(c => ({
+        id: c.id,
+        text: c.text || "",
+        username: c.username || "",
+        timestamp: c.timestamp || "",
+      })),
+    };
   });
 }
 
