@@ -1,11 +1,9 @@
 import { json } from "@remix-run/node";
 import { useLoaderData } from "@remix-run/react";
 import {
-  Page, Card, Text, BlockStack, InlineStack, Tag, Badge, Collapsible, Button,
+  Page, Card, Text, BlockStack, InlineStack, Tag, Badge,
 } from "@shopify/polaris";
-import { useState } from "react";
 import { getAllMentions } from "../lib/syncAllMentions.server.js";
-import { fetchMediaDetail } from "../lib/fetchHashtagUGC.js";
 
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
@@ -14,21 +12,7 @@ export async function loader({ params }) {
   const username = params.username;
   const all = await getAllMentions();
   const posts = all.filter((p) => p.username === username);
-
-  // 逐条拉取 comments 内容（失败不影响整体）
-  const enriched = await Promise.all(
-    posts.map(async (post) => {
-      try {
-        const detail = await fetchMediaDetail(post.id);
-        if (detail?.comments?.length) {
-          return { ...post, comments: detail.comments };
-        }
-      } catch {}
-      return post;
-    })
-  );
-
-  return json({ username, posts: enriched });
+  return json({ username, posts });
 }
 
 export default function CreatorDetail() {
@@ -53,10 +37,8 @@ export default function CreatorDetail() {
 }
 
 function PostCard({ item }) {
-  const [commentsOpen, setCommentsOpen] = useState(false);
   const isVideo = item.media_type === "VIDEO";
   const thumb = item.thumbnail_url || item.media_url || TINY;
-  const comments = item.comments || [];
 
   return (
     <Card padding="400">
@@ -97,38 +79,12 @@ function PostCard({ item }) {
 
         <InlineStack gap="300" blockAlign="center">
           <Text as="span" variant="bodySm" tone="subdued">
-            {item.like_count ?? "-"} likes
+            {item.like_count ?? 0} likes
           </Text>
           <Text as="span" variant="bodySm" tone="subdued">
-            {item.comments_count ?? comments.length} comments
+            {item.comments_count ?? 0} comments
           </Text>
         </InlineStack>
-
-        {comments.length > 0 && (
-          <>
-            <Button
-              variant="plain"
-              onClick={() => setCommentsOpen((o) => !o)}
-            >
-              {commentsOpen ? "Hide comments" : `View ${comments.length} comments`}
-            </Button>
-            <Collapsible open={commentsOpen}>
-              <BlockStack gap="100">
-                {comments.map((c) => (
-                  <div key={c.id} style={{ paddingLeft: 8, borderLeft: "2px solid #e1e3e5" }}>
-                    <Text variant="bodySm" as="p">
-                      <Text as="span" fontWeight="semibold">@{c.username}</Text>{" "}
-                      {c.text}
-                    </Text>
-                    <Text variant="bodySm" as="span" tone="subdued">
-                      {c.timestamp ? new Date(c.timestamp).toLocaleString() : ""}
-                    </Text>
-                  </div>
-                ))}
-              </BlockStack>
-            </Collapsible>
-          </>
-        )}
       </BlockStack>
     </Card>
   );
