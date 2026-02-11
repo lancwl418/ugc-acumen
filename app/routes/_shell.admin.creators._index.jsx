@@ -1,7 +1,7 @@
 import { json } from "@remix-run/node";
-import { useLoaderData, Link } from "@remix-run/react";
-import { Page, BlockStack, Card, Text, InlineStack, Avatar } from "@shopify/polaris";
-import { getAllMentions } from "../lib/syncAllMentions.server.js";
+import { useLoaderData, Link, useFetcher } from "@remix-run/react";
+import { Page, BlockStack, Card, Text, InlineStack, Avatar, Button } from "@shopify/polaris";
+import { getAllMentions, forceRefresh } from "../lib/syncAllMentions.server.js";
 
 export async function loader() {
   const all = await getAllMentions();
@@ -17,18 +17,32 @@ export async function loader() {
     .map(([username, posts]) => ({ username, count: posts.length }))
     .sort((a, b) => b.count - a.count);
 
-  return json({ creators });
+  return json({ creators, total: all.length });
+}
+
+export async function action() {
+  const all = await forceRefresh();
+  return json({ ok: true, count: all.length });
 }
 
 export default function CreatorsPage() {
-  const { creators } = useLoaderData();
+  const { creators, total } = useLoaderData();
+  const fetcher = useFetcher();
+  const isRefreshing = fetcher.state !== "idle";
 
   return (
     <Page title="Creators (Mentions)">
       <BlockStack gap="400">
-        <Text as="p" tone="subdued">
-          Grouped by username from all mentions. Updated daily.
-        </Text>
+        <InlineStack align="space-between" blockAlign="center">
+          <Text as="p" tone="subdued">
+            {total} mentions from {creators.length} creators. Updated daily.
+          </Text>
+          <fetcher.Form method="post">
+            <Button submit loading={isRefreshing}>
+              {isRefreshing ? "Refreshing..." : "Force Refresh"}
+            </Button>
+          </fetcher.Form>
+        </InlineStack>
 
         <div
           style={{

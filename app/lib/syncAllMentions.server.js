@@ -149,3 +149,11 @@ export async function getAllMentions() {
     return [];
   }
 }
+
+/** 强制刷新：清空文件后重新拉取 */
+export async function forceRefresh() {
+  console.log("[syncAllMentions] forceRefresh triggered");
+  await ensureAllMentionsFile();
+  await fs.writeFile(ALL_MENTIONS_PATH, "[]", "utf-8");
+  return fetchAndPersist();
+}
