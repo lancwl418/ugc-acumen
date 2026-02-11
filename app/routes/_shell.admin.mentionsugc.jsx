@@ -393,8 +393,6 @@ function Section({ title, source, pool, visible, products, saver }) {
         <Text as="h2" variant="headingLg">{title}</Text>
         <InlineStack gap="200">
           <Button submit onClick={() => { if (opRef.current) opRef.current.value = "saveVisible"; }} primary>Save visible list (mentions)</Button>
-          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisible"; }}>Refresh media URL (checked)</Button>
-          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "refreshVisibleAll"; }}>Refresh ALL visible</Button>
         </InlineStack>
       </InlineStack>
 
