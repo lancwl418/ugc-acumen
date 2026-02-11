@@ -56,7 +56,7 @@ async function fetchAndPersist(maxItems = 500) {
 
   while (all.length < maxItems) {
     try {
-      const page = await fetchTagUGCPage({ limit: 25, after });
+      const page = await fetchTagUGCPage({ limit: 12, after });
       console.log(`[syncAllMentions] fetched page: ${page.items?.length || 0} items, nextAfter: ${page.nextAfter ? "yes" : "no"}`);
       if (!page.items || page.items.length === 0) break;
       all.push(...page.items);
