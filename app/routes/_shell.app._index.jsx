@@ -16,18 +16,6 @@ export default function HomeIndex() {
             gap: 16,
           }}
         >
-          {/* Hashtags */}
-          <a href="/admin/hashtagugc" data-prefetch="intent" style={{ textDecoration: "none" }}>
-            <Card padding="400">
-              <BlockStack gap="200">
-                <Text as="h3" variant="headingMd">Hashtags (#)</Text>
-                <Text as="p" tone="subdued">
-                  Manage hashtag pool, pick items, set category & link product.
-                </Text>
-              </BlockStack>
-            </Card>
-          </a>
-
           {/* Mentions */}
           <a href="/admin/mentionsugc" data-prefetch="intent" style={{ textDecoration: "none" }}>
             <Card padding="400">

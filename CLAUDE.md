@@ -4,7 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Shopify embedded admin app for managing user-generated content (UGC) from Instagram. Built for the Acumen Camera brand. Merchants can discover content via Instagram hashtags/mentions, curate visible posts, link products, and feature items on their storefront.
+Shopify Custom App（嵌入后台），用于 Instagram UGC 内容运营。不是单纯的 UGC 展示工具，长期目标是构建内容驱动的品牌社区层。
+
+核心功能流程：
+1. 从 Instagram 抓取 UGC（Hashtag + Mentions 两种来源）
+2. 在 Shopify 后台人工筛选可展示内容、设定分类
+3. 为 UGC 关联 Shopify 产品
+4. 前端瀑布流展示，Modal 中展示产品卡片
 
 ## Commands
 
@@ -21,6 +27,10 @@ No test framework is configured.
 
 ## Architecture
 
+三层架构：Instagram 数据层 → Node + Remix 后端层（Shopify Embedded App）→ Shopify 前端展示层
+
+数据流：Instagram Graph API → 后端抓取接口 → 本地 JSON 持久化 → Shopify 前端通过 API 拉取 → 瀑布流展示
+
 **Framework**: Remix on Vite with file-based routing. JavaScript (JSX), TypeScript-ready but not actively used.
 
 **Key directories**:
@@ -36,13 +46,16 @@ No test framework is configured.
 
 **Authentication**: Shopify OAuth via `@shopify/shopify-app-remix`. Session storage backed by Prisma. Auth routes under `/auth/*`.
 
-**Instagram integration**: Fetches content via Instagram Graph API. `app/lib/fetchHashtagUGC.js` handles hashtag discovery, `app/lib/ugcResolverTag.server.js` handles mentions. Uses TTL-based memoization (`app/lib/memo.js`) and concurrency limiting (max 6 concurrent API calls).
+**UGC 抓取模块**:
+- Hashtag 来源: `app/lib/fetchHashtagUGC.js` → API `/api-hashtag-ugc`
+- Mentions/Tag 来源: `app/lib/ugcResolverTag.server.js` → API `/api-tag-ugc`
+- TTL-based memoization (`app/lib/memo.js`) + concurrency limiting (max 6 concurrent API calls)
 
-**Media storage**: Cloudflare R2 (S3-compatible) via `app/lib/r2Client.server.js`. Environment variables prefixed `CF_R2_*`.
+**Media CDN**: Instagram 媒体内容存储到 Cloudflare R2（S3-compatible），通过 `app/lib/r2Client.server.js` 上传。环境变量前缀 `CF_R2_*`。
 
 **UI**: Shopify Polaris components throughout. Uses Remix `useFetcher` for non-navigating mutations and `defer`/`Await`/`Suspense` for progressive loading.
 
-**API endpoints**: Public JSON APIs in `app/routes/api-*.jsx` with CORS headers (`Access-Control-Allow-Origin: *`). These serve curated UGC and product data to the storefront widget.
+**Public API endpoints**: `app/routes/api-*.jsx` with CORS headers (`Access-Control-Allow-Origin: *`). Serve curated UGC and product data to the storefront widget.
 
 ## Environment Variables
 
