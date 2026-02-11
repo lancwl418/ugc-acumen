@@ -49,16 +49,25 @@ async function ensureOnCDN(entry) {
 
 /** 拉取全量 mentions 并持久化 */
 async function fetchAndPersist(maxItems = 500) {
+  console.log("[syncAllMentions] fetchAndPersist started, ALL_MENTIONS_PATH:", ALL_MENTIONS_PATH);
   const all = [];
   let after = "";
 
   while (all.length < maxItems) {
-    const page = await fetchTagUGCPage({ limit: 50, after });
-    if (!page.items || page.items.length === 0) break;
-    all.push(...page.items);
-    after = page.nextAfter || "";
-    if (!after) break;
+    try {
+      const page = await fetchTagUGCPage({ limit: 50, after });
+      console.log(`[syncAllMentions] fetched page: ${page.items?.length || 0} items, nextAfter: ${page.nextAfter ? "yes" : "no"}`);
+      if (!page.items || page.items.length === 0) break;
+      all.push(...page.items);
+      after = page.nextAfter || "";
+      if (!after) break;
+    } catch (err) {
+      console.error("[syncAllMentions] fetchTagUGCPage error:", err?.message || err);
+      break;
+    }
   }
+
+  console.log(`[syncAllMentions] total fetched from API: ${all.length}`);
 
   // 读取已有数据，保留已上传到 CDN 的 URL
   let existing = [];
@@ -97,11 +106,12 @@ async function fetchAndPersist(maxItems = 500) {
  */
 export async function getAllMentions() {
   const stale = await isStale();
+  console.log(`[syncAllMentions] getAllMentions called, stale: ${stale}, path: ${ALL_MENTIONS_PATH}`);
   if (stale) {
     try {
       return await fetchAndPersist();
     } catch (err) {
-      console.error("fetchAndPersist failed:", err?.message || err);
+      console.error("[syncAllMentions] fetchAndPersist failed:", err?.message || err, err?.stack);
       // 降级：尝试读旧数据
     }
   }
