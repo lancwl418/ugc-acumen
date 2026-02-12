@@ -2,7 +2,7 @@
 // 从 Instagram API 拉全量 mentions，媒体上传 R2 creators/ 文件夹，保存到 all_mentions.json
 import fs from "fs/promises";
 import { ALL_MENTIONS_PATH, ensureAllMentionsFile } from "./persistPaths.js";
-import { fetchTagUGCPage } from "./fetchHashtagUGC.js";
+import { fetchTagUGCPage, fetchTagsWithComments } from "./fetchHashtagUGC.js";
 import { r2PutObject } from "./r2Client.server.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -116,6 +116,42 @@ async function fetchAndPersist(maxItems = 100) {
     for (const item of uploaded) {
       mergedById.set(String(item.id), item);
     }
+  }
+
+  // === 第二轮：用 fetchTagsWithComments (limit:3) 补充 comments ===
+  const allIds = new Set([...mergedById.keys()]);
+  const idsWithComments = new Set();
+  // 跳过已有 comments 的条目
+  for (const [id, item] of mergedById) {
+    if (item.comments && item.comments.length > 0) idsWithComments.add(id);
+  }
+  const needComments = allIds.size - idsWithComments.size;
+  if (needComments > 0) {
+    console.log(`[syncAllMentions] fetching comments for ${needComments} posts (limit:3 per page)`);
+    let cAfter = "";
+    let cScanned = 0;
+    const MAX_COMMENT_SCAN = 200;
+    while (cScanned < MAX_COMMENT_SCAN && idsWithComments.size < allIds.size) {
+      try {
+        const cPage = await fetchTagsWithComments({ limit: 3, after: cAfter });
+        if (!cPage.items || cPage.items.length === 0) break;
+        for (const cItem of cPage.items) {
+          const cId = String(cItem.id);
+          if (allIds.has(cId) && !idsWithComments.has(cId)) {
+            const prev = mergedById.get(cId);
+            mergedById.set(cId, { ...prev, comments: cItem.comments || [] });
+            idsWithComments.add(cId);
+          }
+        }
+        cScanned += cPage.items.length;
+        cAfter = cPage.nextAfter || "";
+        if (!cAfter) break;
+      } catch (err) {
+        console.error("[syncAllMentions] fetchTagsWithComments error:", err?.message || err);
+        break;
+      }
+    }
+    console.log(`[syncAllMentions] comments enriched: ${idsWithComments.size}/${allIds.size}`);
   }
 
   const merged = Array.from(mergedById.values())

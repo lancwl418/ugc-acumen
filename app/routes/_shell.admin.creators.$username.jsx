@@ -5,7 +5,6 @@ import {
 } from "@shopify/polaris";
 import { useState } from "react";
 import { getAllMentions } from "../lib/syncAllMentions.server.js";
-import { fetchTagsWithComments } from "../lib/fetchHashtagUGC.js";
 
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
@@ -14,38 +13,7 @@ export async function loader({ params }) {
   const username = params.username;
   const all = await getAllMentions();
   const posts = all.filter((p) => p.username === username);
-  const postIds = new Set(posts.map((p) => String(p.id)));
-
-  // 用小 limit 从 /tags 拉带 comments 的数据，匹配该 creator 的帖子
-  const commentsMap = new Map();
-  let after = "";
-  let scanned = 0;
-  const MAX_SCAN = 200; // 最多翻多少条
-
-  while (scanned < MAX_SCAN && commentsMap.size < postIds.size) {
-    try {
-      const page = await fetchTagsWithComments({ limit: 3, after });
-      if (!page.items || page.items.length === 0) break;
-      for (const item of page.items) {
-        if (postIds.has(String(item.id))) {
-          commentsMap.set(String(item.id), item.comments || []);
-        }
-      }
-      scanned += page.items.length;
-      after = page.nextAfter || "";
-      if (!after) break;
-    } catch {
-      break;
-    }
-  }
-
-  // 合并 comments 到 posts
-  const enriched = posts.map((p) => {
-    const comments = commentsMap.get(String(p.id));
-    return comments ? { ...p, comments } : p;
-  });
-
-  return json({ username, posts: enriched });
+  return json({ username, posts });
 }
 
 export default function CreatorDetail() {
@@ -134,7 +102,7 @@ function PostCard({ item }) {
                 {comments.map((c) => (
                   <div key={c.id} style={{ paddingLeft: 8, borderLeft: "2px solid #e1e3e5" }}>
                     <Text variant="bodySm" as="p">
-                      <Text as="span" fontWeight="semibold">@{c.username}</Text>{" "}
+                      <Text as="span" fontWeight="semibold">@{c.username || `user${String(c.id || "0").slice(-4)}`}</Text>{" "}
                       {c.text}
                     </Text>
                     <Text variant="bodySm" as="span" tone="subdued">
