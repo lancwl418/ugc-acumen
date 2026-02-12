@@ -1,11 +1,16 @@
 import { json } from "@remix-run/node";
 import { useLoaderData, Link, useFetcher } from "@remix-run/react";
-import { Page, BlockStack, Card, Text, InlineStack, Avatar, Button } from "@shopify/polaris";
+import { Page, BlockStack, Card, Text, InlineStack, Avatar, Button, Badge } from "@shopify/polaris";
 import { useRef } from "react";
 import { getAllMentions, forceRefresh } from "../lib/syncAllMentions.server.js";
+import { getAllCreatorLinks, linkCreator, unlinkCreator } from "../lib/creatorLinks.server.js";
+import { CustomerSearchPopover } from "../components/CustomerSearchPopover.jsx";
 
 export async function loader() {
-  const all = await getAllMentions();
+  const [all, links] = await Promise.all([
+    getAllMentions(),
+    getAllCreatorLinks(),
+  ]);
 
   const grouped = {};
   for (const item of all) {
@@ -15,13 +20,35 @@ export async function loader() {
   }
 
   const creators = Object.entries(grouped)
-    .map(([username, posts]) => ({ username, count: posts.length }))
+    .map(([username, posts]) => ({
+      username,
+      count: posts.length,
+      linked: links[username] || null,
+    }))
     .sort((a, b) => b.count - a.count);
 
   return json({ creators, total: all.length });
 }
 
-export async function action() {
+export async function action({ request }) {
+  const fd = await request.formData();
+  const op = fd.get("op");
+
+  if (op === "linkCreator") {
+    await linkCreator(fd.get("username"), {
+      customerId: fd.get("customerId"),
+      displayName: fd.get("displayName"),
+      email: fd.get("email"),
+    });
+    return json({ ok: true, op: "linkCreator" });
+  }
+
+  if (op === "unlinkCreator") {
+    await unlinkCreator(fd.get("username"));
+    return json({ ok: true, op: "unlinkCreator" });
+  }
+
+  // Default: force refresh
   const all = await forceRefresh();
   return json({ ok: true, count: all.length });
 }
@@ -29,6 +56,7 @@ export async function action() {
 export default function CreatorsPage() {
   const { creators, total } = useLoaderData();
   const fetcher = useFetcher();
+  const linkFetcher = useFetcher();
   const formRef = useRef(null);
   const isRefreshing = fetcher.state !== "idle";
 
@@ -38,6 +66,20 @@ export default function CreatorsPage() {
     );
     if (confirmed) fetcher.submit(formRef.current);
   };
+
+  function handleLink(username, customer) {
+    linkFetcher.submit(
+      { op: "linkCreator", username, ...customer },
+      { method: "post" },
+    );
+  }
+
+  function handleUnlink(username) {
+    linkFetcher.submit(
+      { op: "unlinkCreator", username },
+      { method: "post" },
+    );
+  }
 
   return (
     <Page title="Creators (Mentions)">
@@ -61,25 +103,41 @@ export default function CreatorsPage() {
           }}
         >
           {creators.map((c) => (
-            <Link
-              key={c.username}
-              to={`/admin/creators/${encodeURIComponent(c.username)}`}
-              style={{ textDecoration: "none" }}
-            >
-              <Card padding="400">
-                <InlineStack gap="300" blockAlign="center">
-                  <Avatar name={c.username} />
-                  <BlockStack gap="050">
-                    <Text as="h3" variant="headingMd">
-                      @{c.username}
-                    </Text>
-                    <Text tone="subdued" as="p">
-                      {c.count} posts
-                    </Text>
-                  </BlockStack>
-                </InlineStack>
-              </Card>
-            </Link>
+            <Card key={c.username} padding="400">
+              <BlockStack gap="200">
+                <Link
+                  to={`/admin/creators/${encodeURIComponent(c.username)}`}
+                  style={{ textDecoration: "none" }}
+                >
+                  <InlineStack gap="300" blockAlign="center">
+                    <Avatar name={c.username} />
+                    <BlockStack gap="050">
+                      <Text as="h3" variant="headingMd">
+                        @{c.username}
+                      </Text>
+                      <Text tone="subdued" as="p">
+                        {c.count} posts
+                      </Text>
+                    </BlockStack>
+                  </InlineStack>
+                </Link>
+
+                {c.linked ? (
+                  <InlineStack gap="200" blockAlign="center">
+                    <Badge tone="info">{c.linked.displayName}</Badge>
+                    <Button
+                      variant="plain"
+                      tone="critical"
+                      onClick={() => handleUnlink(c.username)}
+                    >
+                      Unlink
+                    </Button>
+                  </InlineStack>
+                ) : (
+                  <CustomerSearchPopover username={c.username} onLink={handleLink} />
+                )}
+              </BlockStack>
+            </Card>
           ))}
         </div>
       </BlockStack>

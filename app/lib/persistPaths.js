@@ -65,6 +65,24 @@ export async function ensureAllMentionsFile() {
   }
 }
 
+/* ===== Creator Links（Instagram username → Shopify customer） ===== */
+const LINKS_ENV = process.env.CREATOR_LINKS_PATH && process.env.CREATOR_LINKS_PATH.trim();
+const LINKS_CANDIDATES = [
+  LINKS_ENV ? path.resolve(LINKS_ENV) : null,
+  path.resolve("public/data/creator_links.json"),
+  path.resolve("public/creator_links.json"),
+].filter(Boolean);
+
+export const CREATOR_LINKS_PATH = pickExisting(LINKS_CANDIDATES);
+
+export async function ensureCreatorLinksFile() {
+  try { await fs.access(CREATOR_LINKS_PATH); }
+  catch {
+    await fs.mkdir(path.dirname(CREATOR_LINKS_PATH), { recursive: true });
+    await fs.writeFile(CREATOR_LINKS_PATH, "{}", "utf-8");
+  }
+}
+
 /* ===== 兼容旧命名（不要删） ===== */
 export const VISIBLE_PATH = VISIBLE_TAG_PATH;
 export async function ensureVisibleFile() { return ensureVisibleTagFile(); }

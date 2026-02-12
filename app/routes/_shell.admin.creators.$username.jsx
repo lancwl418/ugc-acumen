@@ -1,38 +1,97 @@
 import { json } from "@remix-run/node";
-import { useLoaderData } from "@remix-run/react";
+import { useLoaderData, useFetcher } from "@remix-run/react";
 import {
   Page, Card, Text, BlockStack, InlineStack, Tag, Badge, Collapsible, Button,
 } from "@shopify/polaris";
 import { useState } from "react";
 import { getAllMentions } from "../lib/syncAllMentions.server.js";
+import { getCreatorLink, linkCreator, unlinkCreator } from "../lib/creatorLinks.server.js";
+import { CustomerSearchPopover } from "../components/CustomerSearchPopover.jsx";
 
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
 export async function loader({ params }) {
   const username = params.username;
-  const all = await getAllMentions();
+  const [all, linked] = await Promise.all([
+    getAllMentions(),
+    getCreatorLink(username),
+  ]);
   const posts = all.filter((p) => p.username === username);
-  return json({ username, posts });
+  return json({ username, posts, linked });
+}
+
+export async function action({ request }) {
+  const fd = await request.formData();
+  const op = fd.get("op");
+
+  if (op === "linkCreator") {
+    await linkCreator(fd.get("username"), {
+      customerId: fd.get("customerId"),
+      displayName: fd.get("displayName"),
+      email: fd.get("email"),
+    });
+    return json({ ok: true });
+  }
+
+  if (op === "unlinkCreator") {
+    await unlinkCreator(fd.get("username"));
+    return json({ ok: true });
+  }
+
+  return json({ error: "unknown op" }, { status: 400 });
 }
 
 export default function CreatorDetail() {
-  const { username, posts } = useLoaderData();
+  const { username, posts, linked } = useLoaderData();
+  const linkFetcher = useFetcher();
+
+  function handleLink(uname, customer) {
+    linkFetcher.submit(
+      { op: "linkCreator", username: uname, ...customer },
+      { method: "post" },
+    );
+  }
+
+  function handleUnlink(uname) {
+    linkFetcher.submit(
+      { op: "unlinkCreator", username: uname },
+      { method: "post" },
+    );
+  }
 
   return (
     <Page title={`@${username} — ${posts.length} posts`} backAction={{ url: "/admin/creators" }}>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
-          gap: 24,
-          marginTop: 16,
-        }}
-      >
-        {posts.map((item) => (
-          <PostCard key={item.id} item={item} />
-        ))}
-      </div>
+      <BlockStack gap="400">
+        <Card padding="400">
+          <InlineStack gap="300" blockAlign="center">
+            <Text as="h3" variant="headingSm">Shopify Customer</Text>
+            {linked ? (
+              <>
+                <Badge tone="info">{linked.displayName}</Badge>
+                <Text tone="subdued" as="span">{linked.email}</Text>
+                <Button variant="plain" tone="critical" onClick={() => handleUnlink(username)}>
+                  Unlink
+                </Button>
+              </>
+            ) : (
+              <CustomerSearchPopover username={username} onLink={handleLink} />
+            )}
+          </InlineStack>
+        </Card>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
+            gap: 24,
+          }}
+        >
+          {posts.map((item) => (
+            <PostCard key={item.id} item={item} />
+          ))}
+        </div>
+      </BlockStack>
     </Page>
   );
 }
