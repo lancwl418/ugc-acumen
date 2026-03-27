@@ -30,3 +30,64 @@ model Session {
   collaborator  Boolean?  @default(false)
   emailVerified Boolean?  @default(false)
 }
+
+model VisibleMention {
+  id               String    @id
+  username         String
+  timestamp        DateTime
+  mediaType        String
+  mediaUrl         String
+  thumbnailUrl     String?
+  caption          String?
+  permalink        String
+  category         String    @default("camping")
+  products         String    @default("[]")
+  featured         Boolean   @default(false)
+  featuredAt       DateTime?
+  lastRefreshedAt  DateTime?
+  lastRefreshError String?
+  likeCount        Int       @default(0)
+  commentsCount    Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+
+model Mention {
+  id            String    @id
+  username      String
+  timestamp     DateTime
+  mediaType     String
+  mediaUrl      String
+  thumbnailUrl  String?
+  caption       String?
+  permalink     String
+  likeCount     Int       @default(0)
+  commentsCount Int       @default(0)
+  comments      Comment[]
+  fetchedAt     DateTime  @default(now())
+}
+
+model Comment {
+  id        String   @id
+  mentionId String
+  mention   Mention  @relation(fields: [mentionId], references: [id], onDelete: Cascade)
+  text      String
+  username  String
+  timestamp DateTime
+}
+
+model CreatorLink {
+  username    String   @id
+  customerId  String
+  displayName String?
+  email       String?
+  linkedAt    DateTime @default(now())
+}
+
+model Product {
+  handle String  @id
+  title  String
+  image  String?
+  link   String?
+  price  Float   @default(0)
+}

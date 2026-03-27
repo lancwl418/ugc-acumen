@@ -2,23 +2,16 @@
 import { json } from "@remix-run/node";
 import { useLoaderData } from "@remix-run/react";
 import { Page, Card, Text, BlockStack, InlineStack } from "@shopify/polaris";
-import fs from "fs/promises";
-import { VISIBLE_TAG_PATH, ensureVisibleTagFile } from "../lib/persistPaths.js";
+import { getVisibleCount } from "../lib/visibleMentions.js";
 import { getAllMentions } from "../lib/syncAllMentions.server.js";
 
-async function readJsonSafe(file) {
-  try { return JSON.parse((await fs.readFile(file, "utf-8")) || "[]"); }
-  catch { return []; }
-}
-
 export async function loader() {
-  await ensureVisibleTagFile();
-  const [visible, allMentions] = await Promise.all([
-    readJsonSafe(VISIBLE_TAG_PATH),
+  const [visibleCount, allMentions] = await Promise.all([
+    getVisibleCount(),
     getAllMentions(),
   ]);
   const creatorCount = new Set(allMentions.map((m) => m.username).filter(Boolean)).size;
-  return json({ visibleCount: visible.length, creatorCount });
+  return json({ visibleCount, creatorCount });
 }
 
 export default function HomeIndex() {
@@ -86,7 +79,7 @@ export default function HomeIndex() {
               <BlockStack gap="200">
                 <Text as="h3" variant="headingMd">My Posts</Text>
                 <Text as="p" tone="subdued">
-                  View and manage posts you've uploaded manually via link import.
+                  View and manage your own Instagram account posts.
                 </Text>
               </BlockStack>
             </Card>

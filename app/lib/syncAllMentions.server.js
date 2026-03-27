@@ -1,22 +1,42 @@
 // app/lib/syncAllMentions.server.js
-// 从 Instagram API 拉全量 mentions，媒体上传 R2 creators/ 文件夹，保存到 all_mentions.json
-import fs from "fs/promises";
-import { ALL_MENTIONS_PATH, ensureAllMentionsFile } from "./persistPaths.js";
-import { fetchTagUGCPage, fetchTagsWithComments } from "./fetchHashtagUGC.js";
+// 从 Instagram API 拉全量 mentions，媒体上传 R2 creators/ 文件夹，保存到 DB
+import prisma from "../db.server.js";
+import { fetchTagUGCPage, fetchTagsWithComments } from "./instagramAPI.js";
 import { r2PutObject } from "./r2Client.server.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CDN_CONCURRENCY = 3;
 
-/** 检查文件是否需要刷新（不存在、为空、或超过 1 天） */
+/** DB row → legacy snake_case 对象（保持消费者兼容） */
+function mentionToLegacy(m) {
+  return {
+    id: m.id,
+    username: m.username,
+    timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : m.timestamp,
+    media_type: m.mediaType,
+    media_url: m.mediaUrl,
+    thumbnail_url: m.thumbnailUrl || null,
+    caption: m.caption || "",
+    permalink: m.permalink,
+    like_count: m.likeCount ?? 0,
+    comments_count: m.commentsCount ?? 0,
+    comments: (m.comments || []).map(c => ({
+      id: c.id,
+      text: c.text || "",
+      username: c.username || "",
+      timestamp: c.timestamp instanceof Date ? c.timestamp.toISOString() : c.timestamp,
+    })),
+  };
+}
+
+/** 检查是否需要刷新（无数据或超过 1 天） */
 async function isStale() {
-  try {
-    const stat = await fs.stat(ALL_MENTIONS_PATH);
-    if (stat.size <= 4) return true;
-    return Date.now() - stat.mtimeMs > DAY_MS;
-  } catch {
-    return true;
-  }
+  const latest = await prisma.mention.findFirst({
+    orderBy: { fetchedAt: "desc" },
+    select: { fetchedAt: true },
+  });
+  if (!latest) return true;
+  return Date.now() - latest.fetchedAt.getTime() > DAY_MS;
 }
 
 /** 上传单条媒体到 R2 creators/ 文件夹 */
@@ -49,32 +69,30 @@ async function ensureOnCDN(entry) {
   }
 }
 
-/** 并发控制：最多同时 N 个任务 */
+/** 并发控制 */
 async function mapWithLimit(items, limit, fn) {
   const results = [];
   let idx = 0;
-
   async function worker() {
     while (idx < items.length) {
       const i = idx++;
       results[i] = await fn(items[i]);
     }
   }
-
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
   return results;
 }
 
-/** 拉取全量 mentions 并持久化 */
+/** 拉取全量 mentions 并持久化到 DB */
 async function fetchAndPersist(maxItems = 100) {
-  console.log("[syncAllMentions] fetchAndPersist started, path:", ALL_MENTIONS_PATH);
+  console.log("[syncAllMentions] fetchAndPersist started");
   const all = [];
   let after = "";
 
   while (all.length < maxItems) {
     try {
       const page = await fetchTagUGCPage({ limit: 12, after });
-      console.log(`[syncAllMentions] fetched page: ${page.items?.length || 0} items, nextAfter: ${page.nextAfter ? "yes" : "no"}`);
+      console.log(`[syncAllMentions] fetched page: ${page.items?.length || 0} items`);
       if (!page.items || page.items.length === 0) break;
       all.push(...page.items);
       after = page.nextAfter || "";
@@ -88,46 +106,76 @@ async function fetchAndPersist(maxItems = 100) {
   console.log(`[syncAllMentions] total fetched from API: ${all.length}`);
   if (all.length === 0) return [];
 
-  // 读取已有数据
-  let existing = [];
-  try {
-    existing = JSON.parse(await fs.readFile(ALL_MENTIONS_PATH, "utf-8") || "[]");
-  } catch {}
-
-  const mergedById = new Map(existing.map((e) => [String(e.id), e]));
+  // 读取已有数据（检查 CDN URL）
+  const existingRows = await prisma.mention.findMany({ select: { id: true, mediaUrl: true } });
+  const existingMap = new Map(existingRows.map(r => [r.id, r.mediaUrl]));
   const base = (process.env.CF_R2_PUBLIC_BASE || "").replace(/\/+$/, "");
 
   // 找出需要上传 CDN 的新条目
   const needCDN = [];
+  const alreadyCDN = [];
   for (const item of all) {
-    const prev = mergedById.get(String(item.id));
-    if (prev && prev.media_url && base && prev.media_url.startsWith(base + "/")) {
-      // 已有 CDN URL，更新其他字段
-      mergedById.set(String(item.id), { ...prev, ...item, media_url: prev.media_url, thumbnail_url: prev.thumbnail_url || prev.media_url });
+    const prevUrl = existingMap.get(String(item.id));
+    if (prevUrl && base && prevUrl.startsWith(base + "/")) {
+      alreadyCDN.push({ ...item, media_url: prevUrl, thumbnail_url: item.thumbnail_url || prevUrl });
     } else {
       needCDN.push(item);
     }
   }
 
-  // 并发上传 CDN（限制 3 个同时）
+  // 并发上传 CDN
+  let uploaded = [];
   if (needCDN.length > 0) {
-    console.log(`[syncAllMentions] uploading ${needCDN.length} items to R2 (concurrency: ${CDN_CONCURRENCY})`);
-    const uploaded = await mapWithLimit(needCDN, CDN_CONCURRENCY, ensureOnCDN);
-    for (const item of uploaded) {
-      mergedById.set(String(item.id), item);
-    }
+    console.log(`[syncAllMentions] uploading ${needCDN.length} items to R2`);
+    uploaded = await mapWithLimit(needCDN, CDN_CONCURRENCY, ensureOnCDN);
   }
 
-  // === 第二轮：用 fetchTagsWithComments (limit:3) 补充 comments ===
-  const allIds = new Set([...mergedById.keys()]);
-  const idsWithComments = new Set();
-  // 跳过已有 comments 的条目
-  for (const [id, item] of mergedById) {
-    if (item.comments && item.comments.length > 0) idsWithComments.add(id);
+  const merged = [...alreadyCDN, ...uploaded];
+
+  // Upsert 到 Mention 表
+  const nowISO = new Date();
+  for (const item of merged) {
+    await prisma.mention.upsert({
+      where: { id: String(item.id) },
+      update: {
+        username: item.username || "",
+        timestamp: new Date(item.timestamp || 0),
+        mediaType: item.media_type || "IMAGE",
+        mediaUrl: item.media_url || "",
+        thumbnailUrl: item.thumbnail_url || null,
+        caption: item.caption || "",
+        permalink: item.permalink || "",
+        likeCount: item.like_count ?? 0,
+        commentsCount: item.comments_count ?? 0,
+        fetchedAt: nowISO,
+      },
+      create: {
+        id: String(item.id),
+        username: item.username || "",
+        timestamp: new Date(item.timestamp || 0),
+        mediaType: item.media_type || "IMAGE",
+        mediaUrl: item.media_url || "",
+        thumbnailUrl: item.thumbnail_url || null,
+        caption: item.caption || "",
+        permalink: item.permalink || "",
+        likeCount: item.like_count ?? 0,
+        commentsCount: item.comments_count ?? 0,
+        fetchedAt: nowISO,
+      },
+    });
   }
+
+  // === 第二轮：用 fetchTagsWithComments 补充 comments ===
+  const allIds = new Set(merged.map(m => String(m.id)));
+  const withComments = await prisma.comment.findMany({
+    select: { mentionId: true },
+    distinct: ["mentionId"],
+  });
+  const idsWithComments = new Set(withComments.map(c => c.mentionId));
   const needComments = allIds.size - idsWithComments.size;
+
   if (needComments > 0) {
-    console.log(`[syncAllMentions] fetching comments for ${needComments} posts (limit:3 per page)`);
+    console.log(`[syncAllMentions] fetching comments for ${needComments} posts`);
     let cAfter = "";
     let cScanned = 0;
     const MAX_COMMENT_SCAN = 200;
@@ -137,9 +185,20 @@ async function fetchAndPersist(maxItems = 100) {
         if (!cPage.items || cPage.items.length === 0) break;
         for (const cItem of cPage.items) {
           const cId = String(cItem.id);
-          if (allIds.has(cId) && !idsWithComments.has(cId)) {
-            const prev = mergedById.get(cId);
-            mergedById.set(cId, { ...prev, comments: cItem.comments || [] });
+          if (allIds.has(cId) && !idsWithComments.has(cId) && cItem.comments?.length > 0) {
+            for (const c of cItem.comments) {
+              await prisma.comment.upsert({
+                where: { id: String(c.id) },
+                update: { text: c.text || "", username: c.username || "", timestamp: new Date(c.timestamp || 0) },
+                create: {
+                  id: String(c.id),
+                  mentionId: cId,
+                  text: c.text || "",
+                  username: c.username || "",
+                  timestamp: new Date(c.timestamp || 0),
+                },
+              });
+            }
             idsWithComments.add(cId);
           }
         }
@@ -154,22 +213,22 @@ async function fetchAndPersist(maxItems = 100) {
     console.log(`[syncAllMentions] comments enriched: ${idsWithComments.size}/${allIds.size}`);
   }
 
-  const merged = Array.from(mergedById.values())
-    .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
-
-  await ensureAllMentionsFile();
-  await fs.writeFile(ALL_MENTIONS_PATH, JSON.stringify(merged, null, 2), "utf-8");
-  console.log(`✅ all_mentions.json updated: ${merged.length} items`);
-  return merged;
+  // 返回全部数据
+  const result = await prisma.mention.findMany({
+    include: { comments: true },
+    orderBy: { timestamp: "desc" },
+  });
+  console.log(`[syncAllMentions] DB updated: ${result.length} items`);
+  return result.map(mentionToLegacy);
 }
 
 /**
  * 获取全量 mentions 数据。
- * 文件不存在或超过 1 天自动刷新，否则读本地 JSON。
+ * DB 为空或超过 1 天自动刷新，否则读 DB。
  */
 export async function getAllMentions() {
   const stale = await isStale();
-  console.log(`[syncAllMentions] getAllMentions called, stale: ${stale}, path: ${ALL_MENTIONS_PATH}`);
+  console.log(`[syncAllMentions] getAllMentions called, stale: ${stale}`);
   if (stale) {
     try {
       return await fetchAndPersist();
@@ -178,18 +237,15 @@ export async function getAllMentions() {
     }
   }
 
-  await ensureAllMentionsFile();
-  try {
-    return JSON.parse(await fs.readFile(ALL_MENTIONS_PATH, "utf-8") || "[]");
-  } catch {
-    return [];
-  }
+  const rows = await prisma.mention.findMany({
+    include: { comments: true },
+    orderBy: { timestamp: "desc" },
+  });
+  return rows.map(mentionToLegacy);
 }
 
-/** 强制刷新：清空文件后重新拉取 */
+/** 强制刷新：重新拉取 */
 export async function forceRefresh() {
   console.log("[syncAllMentions] forceRefresh triggered");
-  await ensureAllMentionsFile();
-  await fs.writeFile(ALL_MENTIONS_PATH, "[]", "utf-8");
   return fetchAndPersist();
 }

@@ -8,11 +8,10 @@ import {
   BlockStack, SkeletonBodyText, Banner, Badge,
 } from "@shopify/polaris";
 import { Suspense, useMemo, useState, useEffect, useRef } from "react";
-import fs from "fs/promises";
-import path from "path";
-import { VISIBLE_TAG_PATH, ensureVisibleTagFile } from "../lib/persistPaths.js";
-import { fetchTagUGCPage, refreshMediaUrlByTag, scanTagsUntil } from "../lib/fetchHashtagUGC.js";
-// ⬇️ 新增
+import {
+  getAllVisible, upsertManyVisible, replaceAllVisible, getProducts,
+} from "../lib/visibleMentions.js";
+import { fetchTagUGCPage, refreshMediaUrlByTag, scanTagsUntil } from "../lib/instagramAPI.js";
 import { r2PutObject } from "../lib/r2Client.server.js";
 
 const CATEGORY_OPTIONS = [
@@ -26,14 +25,11 @@ const CATEGORY_OPTIONS = [
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
-async function readJsonSafe(file, fallback = "[]") {
-  try { return JSON.parse((await fs.readFile(file, "utf-8")) || fallback); }
-  catch { return JSON.parse(fallback); }
-}
+// readJsonSafe removed — now using Prisma DB
 function readStackSS(key){ try { const raw = sessionStorage.getItem(key); return raw ? JSON.parse(raw) : []; } catch { return []; } }
 function writeStackSS(key, arr){ try { sessionStorage.setItem(key, JSON.stringify(arr)); } catch {} }
 
-export function sortFeaturedThenTime(list = []) {
+function sortFeaturedThenTime(list = []) {
   return [...list].sort((a, b) => {
     const fa = a?.featured ? 1 : 0;
     const fb = b?.featured ? 1 : 0;
@@ -53,10 +49,9 @@ export async function loader({ request }) {
   if (!process.env.INSTAGRAM_IG_ID) envMissing.push("INSTAGRAM_IG_ID");
   if (!process.env.INSTAGRAM_ACCESS_TOKEN) envMissing.push("INSTAGRAM_ACCESS_TOKEN");
 
-  await ensureVisibleTagFile();
   const [tagVisible, products] = await Promise.all([
-    readJsonSafe(VISIBLE_TAG_PATH),
-    readJsonSafe(path.resolve("public/products.json"), "[]"),
+    getAllVisible(),
+    getProducts(),
   ]);
 
   const tagPromise = (async () => {
@@ -79,9 +74,7 @@ export async function action({ request }) {
   const op = fd.get("op");
 
   if (op === "refreshVisibleAll") {
-    await ensureVisibleTagFile();
-    let visible = [];
-    try { visible = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || []; } catch {}
+    const visible = await getAllVisible();
 
     const targetIds = visible.map((v) => String(v.id));
     const safeScan = async () => {
@@ -122,7 +115,7 @@ export async function action({ request }) {
       };
     });
 
-    await fs.writeFile(VISIBLE_TAG_PATH, JSON.stringify(merged, null, 2), "utf-8");
+    await upsertManyVisible(merged);
     const updatedCount = merged.reduce((n, m, i) => {
       const old = visible[i] || {};
       return n + ((m.media_url !== old.media_url) || (m.thumbnail_url !== old.thumbnail_url) ? 1 : 0);
@@ -135,9 +128,7 @@ export async function action({ request }) {
     const picked = fd.getAll("ugc_entry").map((s) => JSON.parse(s));
     const idSet = new Set(picked.map((e) => String(e.id)));
 
-    await ensureVisibleTagFile();
-    let visible = [];
-    try { visible = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || []; } catch {}
+    const visible = await getAllVisible();
 
     const nowISO = new Date().toISOString();
     const updated = [];
@@ -158,7 +149,7 @@ export async function action({ request }) {
       }
     }
 
-    await fs.writeFile(VISIBLE_TAG_PATH, JSON.stringify(updated, null, 2), "utf-8");
+    await upsertManyVisible(updated);
     return json({ ok: true, op: "refreshVisible", refreshed: idSet.size, total: updated.length });
   }
 
@@ -213,20 +204,16 @@ export async function action({ request }) {
     }
   }
 
-  await ensureVisibleTagFile();
-
   if (mode === "replace") {
     const nowISO = new Date().toISOString();
     const replaced = uploaded.map((e) => ({
       ...e, ...(e.featured ? { featuredAt: e.featuredAt || nowISO } : {}),
     }));
-    await fs.writeFile(VISIBLE_TAG_PATH, JSON.stringify(replaced, null, 2), "utf-8");
+    await replaceAllVisible(replaced);
     return json({ ok: true, mode: "replace", count: replaced.length, r2: true });
   }
 
-  let existing = [];
-  try { existing = JSON.parse(await fs.readFile(VISIBLE_TAG_PATH, "utf-8")) || []; } catch {}
-
+  const existing = await getAllVisible();
   const nowISO = new Date().toISOString();
   const byId = new Map(existing.map((x) => [String(x.id), x]));
   for (const e of uploaded) {
@@ -236,7 +223,7 @@ export async function action({ request }) {
   }
 
   const toWrite = Array.from(byId.values());
-  await fs.writeFile(VISIBLE_TAG_PATH, JSON.stringify(toWrite, null, 2), "utf-8");
+  await upsertManyVisible(toWrite);
   return json({ ok: true, mode: "merge", count: uploaded.length, total: toWrite.length, r2: true });
 }
 

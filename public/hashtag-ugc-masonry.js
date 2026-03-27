@@ -7,7 +7,6 @@
     "https://ugc.acumen-camera.com";
 
   // 后端接口
-  const API_HASHTAG = `${API_BASE}/api-hashtag-ugc`;
   const API_TAG = `${API_BASE}/api-tag-ugc`;
   const API_OEMBED = `${API_BASE}/api-ig-oembed`;
   const API_DETAIL = `${API_BASE}/api-ugc-media-detail`;
@@ -397,9 +396,7 @@
       this.category = category;
       this.pageSize = pageSize;
 
-      this.offsetHashtag = 0;
       this.offsetTag = 0;
-      this.totalHashtag = 0;
       this.totalTag = 0;
 
       if (!container) {
@@ -430,46 +427,30 @@
       });
     }
 
-    async fetchPage(offsetH, offsetT) {
-      const sizeH = Math.ceil(this.pageSize / 2);
-      const sizeT = this.pageSize - sizeH;
+    async fetchPage(offsetT) {
+      const qs = `category=${this.category}&limit=${this.pageSize}&offset=${offsetT}`;
 
-      const qsH = `category=${this.category}&limit=${sizeH}&offset=${offsetH}&noRefetch=1`;
-      const qsT = `category=${this.category}&limit=${sizeT}&offset=${offsetT}&noRefetch=1`;
-
-      const [r1, r2] = await Promise.allSettled([
-        fetch(`${API_HASHTAG}?${qsH}`, { mode: "cors" }),
-        fetch(`${API_TAG}?${qsT}`, { mode: "cors" }),
-      ]);
-
-      let hashtag = { media: [], total: 0 };
-      let tag = { media: [], total: 0 };
-
-      if (r1.status === "fulfilled" && r1.value.ok)
-        hashtag = await r1.value.json();
-      if (r2.status === "fulfilled" && r2.value.ok)
-        tag = await r2.value.json();
-
-      const merged = [...hashtag.media, ...tag.media].sort((a, b) =>
-        (b.timestamp || "").localeCompare(a.timestamp || "")
-      );
-
-      return {
-        media: merged,
-        totalHashtag: hashtag.total,
-        totalTag: tag.total,
-        gotHashtag: hashtag.media.length,
-        gotTag: tag.media.length,
-      };
+      try {
+        const r = await fetch(`${API_TAG}?${qs}`, { mode: "cors" });
+        if (!r.ok) return { media: [], totalTag: 0, gotTag: 0 };
+        const tag = await r.json();
+        return {
+          media: tag.media || [],
+          totalTag: tag.total || 0,
+          gotTag: (tag.media || []).length,
+        };
+      } catch {
+        return { media: [], totalTag: 0, gotTag: 0 };
+      }
     }
 
     async loadMore() {
       if (this.disabled) return;
 
-      const data = await this.fetchPage(this.offsetHashtag, this.offsetTag);
+      const data = await this.fetchPage(this.offsetTag);
       const list = data.media;
 
-      if (!list.length && this.offsetHashtag === 0 && this.offsetTag === 0) {
+      if (!list.length && this.offsetTag === 0) {
         const empty = document.createElement("div");
         empty.className = "ugc-empty";
         empty.textContent = "No posts yet.";
@@ -480,14 +461,10 @@
 
       for (const item of list) this.appendItem(item);
 
-      this.offsetHashtag += data.gotHashtag;
       this.offsetTag += data.gotTag;
-      this.totalHashtag = data.totalHashtag;
       this.totalTag = data.totalTag;
 
-      const done =
-        this.offsetHashtag >= data.totalHashtag &&
-        this.offsetTag >= data.totalTag;
+      const done = this.offsetTag >= data.totalTag;
       this.loadMoreBtn.style.display = done ? "none" : "block";
     }
 

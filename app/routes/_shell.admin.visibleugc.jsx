@@ -3,27 +3,14 @@ import { useLoaderData } from "@remix-run/react";
 import {
   Page, Card, Text, BlockStack, InlineStack, Tag, Badge,
 } from "@shopify/polaris";
-import fs from "fs/promises";
-import { VISIBLE_TAG_PATH, ensureVisibleTagFile } from "../lib/persistPaths.js";
+import { getAllVisible } from "../lib/visibleMentions.js";
 
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
-async function readJsonSafe(file) {
-  try { return JSON.parse((await fs.readFile(file, "utf-8")) || "[]"); }
-  catch { return []; }
-}
-
 export async function loader() {
-  await ensureVisibleTagFile();
-  const visible = await readJsonSafe(VISIBLE_TAG_PATH);
-  const sorted = [...visible].sort((a, b) => {
-    const fa = a?.featured ? 1 : 0;
-    const fb = b?.featured ? 1 : 0;
-    if (fb !== fa) return fb - fa;
-    return new Date(b.timestamp || 0) - new Date(a.timestamp || 0);
-  });
-  return json({ items: sorted });
+  const items = await getAllVisible();
+  return json({ items });
 }
 
 export default function VisibleUGCPage() {

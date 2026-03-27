@@ -1,17 +1,17 @@
+// app/routes/api-products.jsx
 import { json } from "@remix-run/node";
-import fs from "fs/promises";
-import path from "path";
+import prisma from "../db.server.js";
 
-export async function loader() {
-  const filePath = path.resolve("public/products.json");
-  const rawData = await fs.readFile(filePath, "utf-8");
-  const products = JSON.parse(rawData);
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
 
-  return json({ products }, {
-  headers: {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+export async function loader({ request }) {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { headers: CORS });
   }
-  });
+  const products = await prisma.product.findMany();
+  return json({ products }, { headers: CORS });
 }

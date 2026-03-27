@@ -1,20 +1,11 @@
 import { json } from "@remix-run/node";
-import { useLoaderData, Form, useFetcher } from "@remix-run/react";
+import { useLoaderData, useFetcher } from "@remix-run/react";
 import {
-  Page,
-  Card,
-  Thumbnail,
-  Text,
-  Checkbox,
-  Button,
-  Select,
-  Tag,
+  Page, Card, Text, Checkbox, Button, Select, Tag,
 } from "@shopify/polaris";
 import { useState } from "react";
-import fs from "fs/promises";
-import path from "path";
-import { VISIBLE_PATH, ensureVisibleFile } from "../lib/persistPaths";
 import { fetchInstagramUGC } from "../lib/fetchInstagram.js";
+import { getAllVisible, upsertManyVisible, getProducts } from "../lib/visibleMentions.js";
 
 const CATEGORY_OPTIONS = [
   { label: "Camping", value: "camping" },
@@ -23,29 +14,32 @@ const CATEGORY_OPTIONS = [
 ];
 
 export async function loader() {
-  // 拉取最新 Instagram 内容
-  await fetchInstagramUGC();
-
-  const ugcRaw = await fs.readFile(path.resolve("public/ugc.json"), "utf-8");
-  // 确保 /data/visible.json 存在（不存在则用 public/visible.json 初始化）
-  await ensureVisibleFile();
-  const visibleRaw = await fs.readFile(VISIBLE_PATH, "utf-8");
-  const productsRaw = await fs.readFile(path.resolve("public/products.json"), "utf-8");
-
-  const all = JSON.parse(ugcRaw);
-  const visible = JSON.parse(visibleRaw);
-  const products = JSON.parse(productsRaw);
-
+  const [all, visible, products] = await Promise.all([
+    fetchInstagramUGC(),
+    getAllVisible(),
+    getProducts(),
+  ]);
   return json({ all, visible, products });
 }
 
 export async function action({ request }) {
   const form = await request.formData();
-  const entries = form.getAll("ugc_entry");
-  const parsed = entries.map((entry) => JSON.parse(entry));
+  const entries = form.getAll("ugc_entry").map((entry) => JSON.parse(entry));
 
-  await fs.writeFile(VISIBLE_PATH, JSON.stringify(parsed, null, 2), "utf-8");
+  const visibleEntries = entries.map((e) => ({
+    id: String(e.id),
+    category: e.category || "camping",
+    products: Array.isArray(e.products) ? e.products : [],
+    username: e.username || "",
+    timestamp: e.timestamp || "",
+    media_type: e.media_type || "IMAGE",
+    media_url: e.media_url || "",
+    thumbnail_url: e.thumbnail_url || "",
+    caption: e.caption || "",
+    permalink: e.permalink || "",
+  }));
 
+  await upsertManyVisible(visibleEntries);
   return json({ ok: true });
 }
 
@@ -59,11 +53,21 @@ export default function AdminUGC() {
     return map;
   });
 
-  const toggle = (id) => {
+  const toggle = (id, item) => {
     setSelected((prev) => {
       const next = new Map(prev);
       if (next.has(id)) next.delete(id);
-      else next.set(id, { category: "camping", products: [] });
+      else next.set(id, {
+        category: "camping",
+        products: [],
+        username: item.username || "",
+        timestamp: item.timestamp || "",
+        media_type: item.media_type || "IMAGE",
+        media_url: item.media_url || "",
+        thumbnail_url: item.thumbnail_url || "",
+        caption: item.caption || "",
+        permalink: item.permalink || "",
+      });
       return next;
     });
   };
@@ -79,7 +83,7 @@ export default function AdminUGC() {
   const changeProducts = (id, value) => {
     setSelected((prev) => {
       const next = new Map(prev);
-      if (next.has(id)) next.get(id).products = value;
+      if (next.has(id)) next.get(id).products = [value];
       return next;
     });
   };
@@ -95,9 +99,7 @@ export default function AdminUGC() {
           }}
         >
           {all
-            .sort((a, b) =>
-              (b.timestamp || "").localeCompare(a.timestamp || "")
-            )
+            .sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""))
             .map((item) => {
               const entry = selected.get(item.id);
               const isChecked = !!entry;
@@ -110,54 +112,40 @@ export default function AdminUGC() {
                     <a href={item.permalink} target="_blank" rel="noreferrer">
                       {item.media_type === "VIDEO" ? (
                         <video
-                          controls
-                          muted
-                          style={{
-                            width: "100%",
-                            height: "200px",
-                            objectFit: "cover",
-                            borderRadius: "8px",
-                          }}
+                          controls muted
+                          style={{ width: "100%", height: "200px", objectFit: "cover", borderRadius: "8px" }}
                         >
                           <source src={item.media_url} type="video/mp4" />
                         </video>
                       ) : (
                         <img
                           src={item.media_url}
-                          alt="UGC 内容"
-                          style={{
-                            width: "100%",
-                            height: "200px",
-                            objectFit: "cover",
-                            borderRadius: "8px",
-                          }}
+                          alt="UGC"
+                          style={{ width: "100%", height: "200px", objectFit: "cover", borderRadius: "8px" }}
                         />
                       )}
                     </a>
                     <Text variant="bodySm" as="p">
-                      {item.caption || "无描述"}
+                      {item.caption || "No description"}
                     </Text>
                     <Checkbox
-                      label="展示在前台"
+                      label="Show on site"
                       checked={isChecked}
-                      onChange={() => toggle(item.id)}
+                      onChange={() => toggle(item.id, item)}
                     />
                     {isChecked && (
                       <>
                         <Select
-                          label="分类"
+                          label="Category"
                           options={CATEGORY_OPTIONS}
                           value={category}
                           onChange={(value) => changeCategory(item.id, value)}
                         />
                         <Select
-                          label="关联产品"
-                          options={products.map((p) => ({
-                            label: p.title,
-                            value: p.handle,
-                          }))}
-                          value={selectedProducts}
-                          onChange={(value) => changeProducts(item.id, [value])}
+                          label="Linked Product"
+                          options={products.map((p) => ({ label: p.title, value: p.handle }))}
+                          value={selectedProducts[0] || ""}
+                          onChange={(value) => changeProducts(item.id, value)}
                         />
                         <input
                           type="hidden"
@@ -166,6 +154,13 @@ export default function AdminUGC() {
                             id: item.id,
                             category,
                             products: selectedProducts,
+                            username: item.username || "",
+                            timestamp: item.timestamp || "",
+                            media_type: item.media_type || "IMAGE",
+                            media_url: item.media_url || "",
+                            thumbnail_url: item.thumbnail_url || "",
+                            caption: item.caption || "",
+                            permalink: item.permalink || "",
                           })}
                         />
                       </>
@@ -177,11 +172,11 @@ export default function AdminUGC() {
         </div>
         <div style={{ marginTop: "24px" }}>
           <Button primary submit>
-            ✅ 保存展示项
+            Save visible items
           </Button>
           {fetcher.state === "idle" && fetcher.data?.ok && (
             <Text variant="bodyMd" tone="success">
-              ✅ 保存成功！
+              Saved successfully!
             </Text>
           )}
         </div>

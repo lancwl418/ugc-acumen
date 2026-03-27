@@ -17,7 +17,8 @@
     "prisma": "prisma",
     "graphql-codegen": "graphql-codegen",
     "vite": "vite",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "migrate-json": "node scripts/migrate-json-to-db.js"
   },
   "type": "module",
   "engines": {

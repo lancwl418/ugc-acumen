@@ -33,11 +33,9 @@ export default function ShellLayout() {
   const items = useMemo(
     () => [
       { label: "Home", url: "/app", match: /^\/app\/?$/ },
-
+      { label: "Visible UGC", url: "/admin/visibleugc", match: /^\/admin\/visibleugc/ },
       { label: "UGC — Mentions (@)", url: "/admin/mentionsugc", match: /^\/admin\/mentionsugc/ },
       { label: "UGC — Creators", url: "/admin/creators", match: /^\/admin\/creators/ },
-
-      // ⭐ 新增菜单项
       { label: "UGC — My Posts", url: "/admin/ugc", match: /^\/admin\/ugc/ },
       
     ],
