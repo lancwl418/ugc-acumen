@@ -4,20 +4,41 @@ import {
   Page, Card, Text, BlockStack, InlineStack, Tag, Badge, Collapsible, Button,
 } from "@shopify/polaris";
 import { useState } from "react";
-import { getAllMentions } from "../lib/syncAllMentions.server.js";
 import { getCreatorLink, linkCreator, unlinkCreator } from "../lib/creatorLinks.server.js";
 import { CustomerSearchPopover } from "../components/CustomerSearchPopover.jsx";
+import prisma from "../db.server.js";
 
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
 export async function loader({ params }) {
   const username = params.username;
-  const [all, linked] = await Promise.all([
-    getAllMentions(),
+  const [rows, linked] = await Promise.all([
+    prisma.mention.findMany({
+      where: { username },
+      include: { comments: true },
+      orderBy: { timestamp: "desc" },
+    }),
     getCreatorLink(username),
   ]);
-  const posts = all.filter((p) => p.username === username);
+  const posts = rows.map((m) => ({
+    id: m.id,
+    username: m.username,
+    timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : m.timestamp,
+    media_type: m.mediaType,
+    media_url: m.mediaUrl,
+    thumbnail_url: m.thumbnailUrl || null,
+    caption: m.caption || "",
+    permalink: m.permalink,
+    like_count: m.likeCount ?? 0,
+    comments_count: m.commentsCount ?? 0,
+    comments: (m.comments || []).map((c) => ({
+      id: c.id,
+      text: c.text || "",
+      username: c.username || "",
+      timestamp: c.timestamp instanceof Date ? c.timestamp.toISOString() : c.timestamp,
+    })),
+  }));
   return json({ username, posts, linked });
 }
 

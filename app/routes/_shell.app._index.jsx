@@ -3,15 +3,14 @@ import { json } from "@remix-run/node";
 import { useLoaderData } from "@remix-run/react";
 import { Page, Card, Text, BlockStack, InlineStack } from "@shopify/polaris";
 import { getVisibleCount } from "../lib/visibleMentions.js";
-import { getAllMentions } from "../lib/syncAllMentions.server.js";
+import prisma from "../db.server.js";
 
 export async function loader() {
-  const [visibleCount, allMentions] = await Promise.all([
+  const [visibleCount, creatorRows] = await Promise.all([
     getVisibleCount(),
-    getAllMentions(),
+    prisma.mention.groupBy({ by: ["username"], where: { username: { not: "" } } }),
   ]);
-  const creatorCount = new Set(allMentions.map((m) => m.username).filter(Boolean)).size;
-  return json({ visibleCount, creatorCount });
+  return json({ visibleCount, creatorCount: creatorRows.length });
 }
 
 export default function HomeIndex() {

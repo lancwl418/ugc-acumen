@@ -4,6 +4,7 @@ import fetch from "node-fetch";
 
 const IG_ID      = process.env.INSTAGRAM_IG_ID || "";
 const USER_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN || "";
+const FETCH_TIMEOUT = 10_000; // 10s per request
 
 /* ============== 缓存 + 并发限流 ============== */
 const mem = new Map();
@@ -17,6 +18,12 @@ function withCache(key, ms, fn) {
 }
 const MAX = 6; let inq = 0; const waiters = [];
 async function withLimit(fn){ if(inq>=MAX) await new Promise(r=>waiters.push(r)); inq++; try{ return await fn(); } finally{ inq--; const n=waiters.shift(); n&&n(); }}
+
+function fetchWithTimeout(url, opts = {}) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT);
+  return fetch(url, { ...opts, signal: ac.signal }).finally(() => clearTimeout(timer));
+}
 
 /* ====================== Mentions (/tags) 分页 ======================= */
 export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
@@ -33,7 +40,7 @@ export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
     if (after) u.searchParams.set("after", after);
     u.searchParams.set("access_token", USER_TOKEN);
 
-    const r = await withLimit(()=>fetch(u));
+    const r = await withLimit(()=>fetchWithTimeout(u));
     const j = await r.json();
     if (!r.ok || j?.error) throw new Error(j?.error?.message || `Graph ${r.status}`);
 

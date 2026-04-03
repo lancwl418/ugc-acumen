@@ -2,32 +2,29 @@ import { json } from "@remix-run/node";
 import { useLoaderData, Link, useFetcher } from "@remix-run/react";
 import { Page, BlockStack, Card, Text, InlineStack, Avatar, Button, Badge } from "@shopify/polaris";
 import { useRef } from "react";
-import { getAllMentions, forceRefresh } from "../lib/syncAllMentions.server.js";
+import { forceRefresh } from "../lib/syncAllMentions.server.js";
 import { getAllCreatorLinks, linkCreator, unlinkCreator } from "../lib/creatorLinks.server.js";
 import { CustomerSearchPopover } from "../components/CustomerSearchPopover.jsx";
+import prisma from "../db.server.js";
 
 export async function loader() {
-  const [all, links] = await Promise.all([
-    getAllMentions(),
+  const [grouped, links] = await Promise.all([
+    prisma.mention.groupBy({
+      by: ["username"],
+      _count: { id: true },
+      orderBy: { _count: { id: "desc" } },
+    }),
     getAllCreatorLinks(),
   ]);
 
-  const grouped = {};
-  for (const item of all) {
-    const user = item.username || "unknown";
-    if (!grouped[user]) grouped[user] = [];
-    grouped[user].push(item);
-  }
+  const creators = grouped.map((g) => ({
+    username: g.username || "unknown",
+    count: g._count.id,
+    linked: links[g.username] || null,
+  }));
 
-  const creators = Object.entries(grouped)
-    .map(([username, posts]) => ({
-      username,
-      count: posts.length,
-      linked: links[username] || null,
-    }))
-    .sort((a, b) => b.count - a.count);
-
-  return json({ creators, total: all.length });
+  const total = creators.reduce((s, c) => s + c.count, 0);
+  return json({ creators, total });
 }
 
 export async function action({ request }) {
