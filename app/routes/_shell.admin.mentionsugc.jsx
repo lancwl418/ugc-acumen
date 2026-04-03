@@ -236,7 +236,7 @@ export default function AdminMentionsUGC() {
     <Page>
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h1" variant="headingLg">UGC Admin — Mentions (tags)</Text>
-        <Text as="span" tone="subdued">前端只读 visible_tag.json</Text>
+        <Text as="span" tone="subdued">前端只读 VisibleMention 表</Text>
       </InlineStack>
 
       {(data?.envMissing?.length > 0) && (
