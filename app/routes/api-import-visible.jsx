@@ -1,86 +1,97 @@
-// 临时 API — 从 JSON 导入 VisibleMention 数据，用完后删除此文件
+// 临时 API — 导入 mentions + visible 数据，用完后删除此文件和 import_data.json
 import { json } from "@remix-run/node";
+import { readFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import prisma from "../db.server.js";
 
-const VISIBLE_DATA = [
-  { id: "18085131338045950", category: "off-road", products: ["the-legend-3ch-waterproof-mirror-dvr-switching-system-with-8-gang-in-car-power-solid-state-switch-control-box-with-wifi-bluetooth-gps-super-night-vision"] },
-  { id: "18120235678530231", category: "off-road", products: ["the-legend-3ch-waterproof-mirror-dvr-switching-system-with-8-gang-in-car-power-solid-state-switch-control-box-with-wifi-bluetooth-gps-super-night-vision"] },
-  { id: "17867641023483406", category: "travel", products: ["m4-quad-mirror-dash-cam-with-1080p-front-rear-left-right-side-cameras-12ips-touchscreen-2"] },
-  { id: "18532131610026505", category: "off-road", products: [] },
-  { id: "18086867902927773", category: "off-road", products: [] },
-  { id: "18077733232890070", category: "off-road", products: [] },
-  { id: "18042867203463669", category: "off-road", products: [] },
-  { id: "18077136710022944", category: "off-road", products: [] },
-  { id: "18094697233634746", category: "travel", products: [] },
-  { id: "18105483700785990", category: "off-road", products: [] },
-  { id: "18026960068659285", category: "off-road", products: [] },
-  { id: "17929380849109756", category: "off-road", products: [] },
-  { id: "18079629666043076", category: "off-road", products: [] },
-  { id: "18094680178722006", category: "off-road", products: [] },
-  { id: "17920651729182826", category: "off-road", products: [] },
-  { id: "18247040247220485", category: "off-road", products: [] },
-  { id: "18074020858037982", category: "off-road", products: [] },
-  { id: "18008571555714765", category: "off-road", products: [] },
-  { id: "18041505447462459", category: "camping", products: [] },
-  { id: "18358174564120804", category: "off-road", products: [] },
-  { id: "18143009975402050", category: "off-road", products: [] },
-  { id: "18074044625037982", category: "off-road", products: [] },
-  { id: "18067508553039290", category: "off-road", products: [] },
-  { id: "17929479095106540", category: "off-road", products: [] },
-  { id: "18079643178043076", category: "off-road", products: [] },
-  { id: "18100093009767660", category: "off-road", products: [] },
-  { id: "18059866803093510", category: "camping", products: [] },
-  { id: "17921260765176474", category: "off-road", products: [] },
-  { id: "17889637099321014", category: "off-road", products: [] },
-  { id: "18025165093659285", category: "off-road", products: [] },
-  { id: "18042853704463669", category: "off-road", products: [] },
-  { id: "18098389768799764", category: "off-road", products: [] },
-  { id: "18011529974649765", category: "off-road", products: [] },
-  { id: "18310268765184131", category: "electronic", products: [] },
-];
+function loadData() {
+  const dir = dirname(fileURLToPath(import.meta.url));
+  const raw = readFileSync(join(dir, "../lib/import_data.json"), "utf-8");
+  return JSON.parse(raw);
+}
 
 export async function loader() {
-  return json({ message: "POST to this endpoint to import visible data", count: VISIBLE_DATA.length });
+  const data = loadData();
+  return json({ mentionCount: data.mentions.length, visibleCount: data.visible.length });
 }
 
 export async function action() {
-  const ids = VISIBLE_DATA.map((v) => v.id);
-  const mentions = await prisma.mention.findMany({ where: { id: { in: ids } } });
-  const mentionMap = new Map(mentions.map((m) => [m.id, m]));
+  const data = loadData();
+  const results = { mentionsImported: 0, visibleImported: 0, commentsImported: 0 };
 
-  let imported = 0;
-  let notFound = [];
-
-  for (const entry of VISIBLE_DATA) {
-    const m = mentionMap.get(entry.id);
-    if (!m) {
-      notFound.push(entry.id);
-      continue;
-    }
-
-    await prisma.visibleMention.upsert({
-      where: { id: entry.id },
+  // 1. Import all 124 mentions
+  for (const m of data.mentions) {
+    await prisma.mention.upsert({
+      where: { id: m.id },
       update: {
-        category: entry.category,
-        products: JSON.stringify(entry.products),
+        username: m.username,
+        timestamp: new Date(m.timestamp),
+        mediaType: m.media_type,
+        mediaUrl: m.media_url,
+        thumbnailUrl: m.thumbnail_url || null,
+        caption: m.caption || "",
+        permalink: m.permalink,
+        likeCount: m.like_count ?? 0,
+        commentsCount: m.comments_count ?? 0,
       },
       create: {
-        id: entry.id,
+        id: m.id,
         username: m.username,
-        timestamp: m.timestamp,
-        mediaType: m.mediaType,
-        mediaUrl: m.mediaUrl,
-        thumbnailUrl: m.thumbnailUrl,
-        caption: m.caption,
+        timestamp: new Date(m.timestamp),
+        mediaType: m.media_type,
+        mediaUrl: m.media_url,
+        thumbnailUrl: m.thumbnail_url || null,
+        caption: m.caption || "",
         permalink: m.permalink,
-        category: entry.category,
-        products: JSON.stringify(entry.products),
-        likeCount: m.likeCount,
-        commentsCount: m.commentsCount,
+        likeCount: m.like_count ?? 0,
+        commentsCount: m.comments_count ?? 0,
       },
     });
-    imported++;
+    results.mentionsImported++;
+
+    // Import comments
+    for (const c of (m.comments || [])) {
+      await prisma.comment.upsert({
+        where: { id: String(c.id) },
+        update: { text: c.text || "", username: c.username || "", timestamp: new Date(c.timestamp) },
+        create: {
+          id: String(c.id),
+          mentionId: m.id,
+          text: c.text || "",
+          username: c.username || "",
+          timestamp: new Date(c.timestamp),
+        },
+      });
+      results.commentsImported++;
+    }
   }
 
-  return json({ ok: true, imported, notFound, notFoundCount: notFound.length });
+  // 2. Import 23 visible mentions
+  for (const v of data.visible) {
+    await prisma.visibleMention.upsert({
+      where: { id: v.id },
+      update: {
+        category: v.category,
+        products: JSON.stringify(v.products),
+      },
+      create: {
+        id: v.id,
+        username: v.username,
+        timestamp: new Date(v.timestamp),
+        mediaType: v.media_type,
+        mediaUrl: v.media_url,
+        thumbnailUrl: v.thumbnail_url || null,
+        caption: v.caption || "",
+        permalink: v.permalink,
+        category: v.category,
+        products: JSON.stringify(v.products),
+        likeCount: v.like_count ?? 0,
+        commentsCount: v.comments_count ?? 0,
+      },
+    });
+    results.visibleImported++;
+  }
+
+  return json({ ok: true, ...results });
 }
