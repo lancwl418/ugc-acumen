@@ -39,7 +39,7 @@ export async function loader({ params }) {
       timestamp: c.timestamp instanceof Date ? c.timestamp.toISOString() : c.timestamp,
     })),
   }));
-  return json({ username, posts, linked });
+  return json({ username, posts, linked, profilePicUrl: linked?.profilePicUrl || null });
 }
 
 export async function action({ request }) {
@@ -64,7 +64,7 @@ export async function action({ request }) {
 }
 
 export default function CreatorDetail() {
-  const { username, posts, linked } = useLoaderData();
+  const { username, posts, linked, profilePicUrl } = useLoaderData();
   const linkFetcher = useFetcher();
 
   function handleLink(uname, customer) {
@@ -82,8 +82,29 @@ export default function CreatorDetail() {
   }
 
   return (
-    <Page title={`@${username} — ${posts.length} posts`} backAction={{ url: "/admin/creators" }}>
+    <Page backAction={{ url: "/admin/creators" }}>
       <BlockStack gap="400">
+        <Card padding="400">
+          <InlineStack gap="400" blockAlign="center">
+            {profilePicUrl ? (
+              <img
+                src={profilePicUrl}
+                alt={username}
+                style={{
+                  width: 56,
+                  height: 56,
+                  borderRadius: "50%",
+                  objectFit: "cover",
+                }}
+              />
+            ) : null}
+            <BlockStack gap="100">
+              <Text as="h2" variant="headingLg">@{username}</Text>
+              <Text as="p" tone="subdued">{posts.length} posts</Text>
+            </BlockStack>
+          </InlineStack>
+        </Card>
+
         <Card padding="400">
           <InlineStack gap="300" blockAlign="center">
             <Text as="h3" variant="headingSm">Shopify Customer</Text>

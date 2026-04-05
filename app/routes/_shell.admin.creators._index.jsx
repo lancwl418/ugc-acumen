@@ -1,9 +1,10 @@
 import { json } from "@remix-run/node";
 import { useLoaderData, Link, useFetcher } from "@remix-run/react";
-import { Page, BlockStack, Card, Text, InlineStack, Avatar, Button, Badge } from "@shopify/polaris";
+import { Page, BlockStack, Card, Text, InlineStack, Avatar, Button, Badge, Banner } from "@shopify/polaris";
 import { useRef } from "react";
 import { forceRefresh } from "../lib/syncAllMentions.server.js";
-import { getAllCreatorLinks, linkCreator, unlinkCreator } from "../lib/creatorLinks.server.js";
+import { getAllCreatorLinks, linkCreator, unlinkCreator, updateProfilePic } from "../lib/creatorLinks.server.js";
+import { fetchAndStoreProfilePic } from "../lib/instagramProfile.server.js";
 import { CustomerSearchPopover } from "../components/CustomerSearchPopover.jsx";
 import prisma from "../db.server.js";
 
@@ -21,6 +22,7 @@ export async function loader() {
     username: g.username || "unknown",
     count: g._count.id,
     linked: links[g.username] || null,
+    profilePicUrl: links[g.username]?.profilePicUrl || null,
   }));
 
   const total = creators.reduce((s, c) => s + c.count, 0);
@@ -45,6 +47,36 @@ export async function action({ request }) {
     return json({ ok: true, op: "unlinkCreator" });
   }
 
+  if (op === "fetchAvatar") {
+    const username = fd.get("username");
+    try {
+      const cdnUrl = await fetchAndStoreProfilePic(username);
+      if (cdnUrl) {
+        await updateProfilePic(username, cdnUrl);
+      }
+      return json({ ok: true, op: "fetchAvatar", username, cdnUrl });
+    } catch (err) {
+      return json({ ok: false, op: "fetchAvatar", error: err.message }, { status: 500 });
+    }
+  }
+
+  if (op === "fetchAllAvatars") {
+    const usernames = fd.get("usernames")?.split(",").filter(Boolean) || [];
+    const results = [];
+    for (const username of usernames) {
+      try {
+        const cdnUrl = await fetchAndStoreProfilePic(username);
+        if (cdnUrl) {
+          await updateProfilePic(username, cdnUrl);
+          results.push({ username, ok: true });
+        }
+      } catch {
+        results.push({ username, ok: false });
+      }
+    }
+    return json({ ok: true, op: "fetchAllAvatars", results });
+  }
+
   // Default: force refresh
   const all = await forceRefresh();
   return json({ ok: true, count: all.length });
@@ -54,8 +86,10 @@ export default function CreatorsPage() {
   const { creators, total } = useLoaderData();
   const fetcher = useFetcher();
   const linkFetcher = useFetcher();
+  const avatarFetcher = useFetcher();
   const formRef = useRef(null);
   const isRefreshing = fetcher.state !== "idle";
+  const isFetchingAvatars = avatarFetcher.state !== "idle";
 
   const handleRefresh = () => {
     const confirmed = window.confirm(
@@ -78,6 +112,24 @@ export default function CreatorsPage() {
     );
   }
 
+  function handleFetchAvatar(username) {
+    avatarFetcher.submit(
+      { op: "fetchAvatar", username },
+      { method: "post" },
+    );
+  }
+
+  function handleFetchAllAvatars() {
+    const missing = creators
+      .filter((c) => !c.profilePicUrl)
+      .map((c) => c.username);
+    if (missing.length === 0) return;
+    avatarFetcher.submit(
+      { op: "fetchAllAvatars", usernames: missing.join(",") },
+      { method: "post" },
+    );
+  }
+
   return (
     <Page title="Creators (Mentions)">
       <BlockStack gap="400">
@@ -85,11 +137,16 @@ export default function CreatorsPage() {
           <Text as="p" tone="subdued">
             {total} mentions from {creators.length} creators. Updated daily.
           </Text>
-          <fetcher.Form method="post" ref={formRef}>
-            <Button onClick={handleRefresh} loading={isRefreshing}>
-              {isRefreshing ? "Refreshing..." : "Force Refresh"}
+          <InlineStack gap="200">
+            <Button onClick={handleFetchAllAvatars} loading={isFetchingAvatars}>
+              {isFetchingAvatars ? "Fetching..." : "Fetch All Avatars"}
             </Button>
-          </fetcher.Form>
+            <fetcher.Form method="post" ref={formRef}>
+              <Button onClick={handleRefresh} loading={isRefreshing}>
+                {isRefreshing ? "Refreshing..." : "Force Refresh"}
+              </Button>
+            </fetcher.Form>
+          </InlineStack>
         </InlineStack>
 
         <div
@@ -107,7 +164,20 @@ export default function CreatorsPage() {
                   style={{ textDecoration: "none" }}
                 >
                   <InlineStack gap="300" blockAlign="center">
-                    <Avatar name={c.username} />
+                    {c.profilePicUrl ? (
+                      <img
+                        src={c.profilePicUrl}
+                        alt={c.username}
+                        style={{
+                          width: 40,
+                          height: 40,
+                          borderRadius: "50%",
+                          objectFit: "cover",
+                        }}
+                      />
+                    ) : (
+                      <Avatar name={c.username} />
+                    )}
                     <BlockStack gap="050">
                       <Text as="h3" variant="headingMd">
                         @{c.username}
@@ -132,6 +202,16 @@ export default function CreatorsPage() {
                   </InlineStack>
                 ) : (
                   <CustomerSearchPopover username={c.username} onLink={handleLink} />
+                )}
+
+                {!c.profilePicUrl && (
+                  <Button
+                    variant="plain"
+                    onClick={() => handleFetchAvatar(c.username)}
+                    disabled={isFetchingAvatars}
+                  >
+                    Fetch Avatar
+                  </Button>
                 )}
               </BlockStack>
             </Card>

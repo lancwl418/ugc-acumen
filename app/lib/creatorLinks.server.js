@@ -9,6 +9,7 @@ export async function getCreatorLink(username) {
     customerId: row.customerId,
     displayName: row.displayName,
     email: row.email,
+    profilePicUrl: row.profilePicUrl,
     linkedAt: row.linkedAt.toISOString(),
   };
 }
@@ -21,6 +22,7 @@ export async function getAllCreatorLinks() {
       customerId: row.customerId,
       displayName: row.displayName,
       email: row.email,
+      profilePicUrl: row.profilePicUrl,
       linkedAt: row.linkedAt.toISOString(),
     };
   }
@@ -37,4 +39,24 @@ export async function linkCreator(username, { customerId, displayName, email }) 
 
 export async function unlinkCreator(username) {
   return prisma.creatorLink.delete({ where: { username } }).catch(() => {});
+}
+
+export async function updateProfilePic(username, profilePicUrl) {
+  return prisma.creatorLink.upsert({
+    where: { username },
+    update: { profilePicUrl },
+    create: { username, customerId: "", profilePicUrl },
+  });
+}
+
+/**
+ * Get profile pic URL for a username.
+ * Returns stored URL or null.
+ */
+export async function getProfilePicUrl(username) {
+  const row = await prisma.creatorLink.findUnique({
+    where: { username },
+    select: { profilePicUrl: true },
+  });
+  return row?.profilePicUrl || null;
 }

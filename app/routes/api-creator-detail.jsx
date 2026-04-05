@@ -72,6 +72,7 @@ export async function loader({ request }) {
         display_name: linked?.displayName || null,
         email: linked?.email || null,
         customer_id: linked?.customerId || null,
+        profile_pic_url: linked?.profilePicUrl || null,
         post_count: total,
         total_likes: stats._sum.likeCount || 0,
         total_comments: stats._sum.commentsCount || 0,

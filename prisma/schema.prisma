@@ -78,11 +78,12 @@ model Comment {
 }
 
 model CreatorLink {
-  username    String   @id
-  customerId  String
-  displayName String?
-  email       String?
-  linkedAt    DateTime @default(now())
+  username       String   @id
+  customerId     String
+  displayName    String?
+  email          String?
+  profilePicUrl  String?
+  linkedAt       DateTime @default(now())
 }
 
 model Product {
