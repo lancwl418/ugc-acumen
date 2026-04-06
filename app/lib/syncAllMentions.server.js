@@ -3,6 +3,8 @@
 import prisma from "../db.server.js";
 import { fetchTagUGCPage, fetchTagsWithComments } from "./instagramAPI.js";
 import { r2PutObject } from "./r2Client.server.js";
+import { fetchAndStoreProfilePic } from "./instagramProfile.server.js";
+import { updateProfilePic } from "./creatorLinks.server.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CDN_CONCURRENCY = 3;
@@ -211,6 +213,30 @@ async function fetchAndPersist(maxItems = 100) {
       }
     }
     console.log(`[syncAllMentions] comments enriched: ${idsWithComments.size}/${allIds.size}`);
+  }
+
+  // === 第三轮：自动抓取新 creator 的 profile pic ===
+  const allUsernames = [...new Set(merged.map(m => m.username).filter(Boolean))];
+  const existingLinks = await prisma.creatorLink.findMany({
+    where: { username: { in: allUsernames } },
+    select: { username: true, profilePicUrl: true },
+  });
+  const hasProfilePic = new Set(existingLinks.filter(l => l.profilePicUrl).map(l => l.username));
+  const needProfilePic = allUsernames.filter(u => !hasProfilePic.has(u));
+
+  if (needProfilePic.length > 0) {
+    console.log(`[syncAllMentions] fetching profile pics for ${needProfilePic.length} creators`);
+    for (const username of needProfilePic) {
+      try {
+        const cdnUrl = await fetchAndStoreProfilePic(username);
+        if (cdnUrl) {
+          await updateProfilePic(username, cdnUrl);
+          console.log(`[syncAllMentions] profile pic saved for @${username}`);
+        }
+      } catch (err) {
+        console.error(`[syncAllMentions] profile pic failed for @${username}:`, err?.message || err);
+      }
+    }
   }
 
   // 返回全部数据
