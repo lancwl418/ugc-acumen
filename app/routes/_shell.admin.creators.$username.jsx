@@ -2,11 +2,20 @@ import { json } from "@remix-run/node";
 import { useLoaderData, useFetcher } from "@remix-run/react";
 import {
   Page, Card, Text, BlockStack, InlineStack, Tag, Badge, Collapsible, Button,
+  Checkbox, TextField, ChoiceList,
 } from "@shopify/polaris";
 import { useState } from "react";
-import { getCreatorLink, linkCreator, unlinkCreator } from "../lib/creatorLinks.server.js";
+import { getCreatorLink, linkCreator, unlinkCreator, updateAmbassadorProfile } from "../lib/creatorLinks.server.js";
 import { CustomerSearchPopover } from "../components/CustomerSearchPopover.jsx";
 import prisma from "../db.server.js";
+
+const SCENARIO_OPTIONS = [
+  { label: "Daily Safety", value: "daily" },
+  { label: "RV & Overland", value: "rv" },
+  { label: "Adventure", value: "adventure" },
+  { label: "Event Capture", value: "event" },
+  { label: "Installation", value: "install" },
+];
 
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
@@ -57,6 +66,21 @@ export async function action({ request }) {
 
   if (op === "unlinkCreator") {
     await unlinkCreator(fd.get("username"));
+    return json({ ok: true });
+  }
+
+  if (op === "updateAmbassador") {
+    let scenarios = [];
+    try { scenarios = JSON.parse(fd.get("scenarios") || "[]"); } catch {}
+    await updateAmbassadorProfile(fd.get("username"), {
+      isAmbassador: fd.get("isAmbassador") === "true",
+      role: fd.get("role"),
+      quote: fd.get("quote"),
+      setup: fd.get("setup"),
+      base: fd.get("base"),
+      joinedYear: fd.get("joinedYear"),
+      scenarios,
+    });
     return json({ ok: true });
   }
 
@@ -122,6 +146,9 @@ export default function CreatorDetail() {
           </InlineStack>
         </Card>
 
+        <AmbassadorCard username={username} linked={linked} />
+
+
         <div
           style={{
             display: "grid",
@@ -135,6 +162,112 @@ export default function CreatorDetail() {
         </div>
       </BlockStack>
     </Page>
+  );
+}
+
+function AmbassadorCard({ username, linked }) {
+  const fetcher = useFetcher();
+  const [isAmb, setIsAmb] = useState(!!linked?.isAmbassador);
+  const [role, setRole] = useState(linked?.role || "");
+  const [quote, setQuote] = useState(linked?.quote || "");
+  const [setup, setSetup] = useState(linked?.setup || "");
+  const [base, setBase] = useState(linked?.base || "");
+  const [joinedYear, setJoinedYear] = useState(linked?.joinedYear ? String(linked.joinedYear) : "");
+  const [scenarios, setScenarios] = useState(linked?.scenarios || []);
+
+  const saving = fetcher.state !== "idle";
+
+  function save() {
+    fetcher.submit(
+      {
+        op: "updateAmbassador",
+        username,
+        isAmbassador: String(isAmb),
+        role, quote, setup, base, joinedYear,
+        scenarios: JSON.stringify(scenarios),
+      },
+      { method: "post" },
+    );
+  }
+
+  return (
+    <Card padding="400">
+      <BlockStack gap="300">
+        <InlineStack gap="200" blockAlign="center">
+          <Text as="h3" variant="headingSm">Community Ambassador</Text>
+          {isAmb && <Badge tone="info">Ambassador</Badge>}
+        </InlineStack>
+
+        <Checkbox
+          label="Show this creator as a Community Ambassador on the storefront"
+          checked={isAmb}
+          onChange={setIsAmb}
+        />
+
+        {isAmb && (
+          <BlockStack gap="300">
+            <TextField
+              label="Role"
+              value={role}
+              onChange={setRole}
+              placeholder="e.g. RV Correspondent · Install Editor · Overland Lead"
+              autoComplete="off"
+            />
+            <TextField
+              label="Pull quote"
+              value={quote}
+              onChange={setQuote}
+              multiline={3}
+              placeholder="A single line they'd say about why they shoot."
+              autoComplete="off"
+            />
+            <InlineStack gap="300" wrap>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <TextField
+                  label="Setup"
+                  value={setup}
+                  onChange={setSetup}
+                  placeholder="'22 Ram ProMaster · A7 Pro 4-channel"
+                  autoComplete="off"
+                />
+              </div>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <TextField
+                  label="Based in"
+                  value={base}
+                  onChange={setBase}
+                  placeholder="Bend, OR"
+                  autoComplete="off"
+                />
+              </div>
+              <div style={{ width: 140 }}>
+                <TextField
+                  label="Joined year"
+                  type="number"
+                  value={joinedYear}
+                  onChange={setJoinedYear}
+                  placeholder="2024"
+                  autoComplete="off"
+                />
+              </div>
+            </InlineStack>
+            <ChoiceList
+              title="Scenarios they cover"
+              choices={SCENARIO_OPTIONS}
+              selected={scenarios}
+              onChange={setScenarios}
+              allowMultiple
+            />
+          </BlockStack>
+        )}
+
+        <InlineStack gap="200">
+          <Button variant="primary" onClick={save} loading={saving}>
+            Save ambassador profile
+          </Button>
+        </InlineStack>
+      </BlockStack>
+    </Card>
   );
 }
 

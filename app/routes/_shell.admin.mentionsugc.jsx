@@ -15,12 +15,11 @@ import { fetchTagUGCPage, refreshMediaUrlByTag, scanTagsUntil } from "../lib/ins
 import { r2PutObject } from "../lib/r2Client.server.js";
 
 const CATEGORY_OPTIONS = [
-  { label: "Camping & Towing", value: "camping" },
-  { label: "Off-Road Adventure", value: "off-road" },
-  { label: "Everyday Protection", value: "electronic" },
-  { label: "Commercial & Fleet", value: "travel" },
-  { label: "Documentation", value: "documentation" },
-  { label: "UTV/SxS", value: "events" },
+  { label: "Daily Safety", value: "daily" },
+  { label: "RV & Overland", value: "rv" },
+  { label: "Adventure", value: "adventure" },
+  { label: "Event Capture", value: "event" },
+  { label: "Installation", value: "install" },
 ];
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";

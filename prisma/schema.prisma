@@ -84,6 +84,14 @@ model CreatorLink {
   email          String?
   profilePicUrl  String?
   linkedAt       DateTime @default(now())
+
+  isAmbassador   Boolean  @default(false)
+  role           String?
+  quote          String?
+  setup          String?
+  base           String?
+  joinedYear     Int?
+  scenarios      String?
 }
 
 model Product {
