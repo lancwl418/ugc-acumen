@@ -1,7 +1,7 @@
 // app/routes/api-community.jsx
-// Public API: Community page data — visible UGC grouped/filtered by scenario,
-// plus aggregate stats for the hero. Serves Videos + Photos; Reviews are not
-// in scope for v1.
+// Public API: Community page data — non-video VisibleMention posts grouped /
+// filtered by scenario, plus aggregate stats for the hero.
+// Videos are excluded by design (storefront page is photo-only for v1).
 import { json } from "@remix-run/node";
 import prisma from "../db.server.js";
 import { toAPI } from "../lib/visibleMentions.js";
@@ -23,10 +23,6 @@ export const SCENARIOS = [
 
 const SCENARIO_IDS = new Set(SCENARIOS.map((s) => s.id));
 
-function isVideo(mediaType) {
-  return mediaType === "VIDEO";
-}
-
 export async function loader({ request }) {
   if (request.method === "OPTIONS") {
     return new Response(null, { headers: CORS });
@@ -35,18 +31,23 @@ export async function loader({ request }) {
   const url = new URL(request.url);
   const scenarioParam = url.searchParams.get("scenario");
   const scenario = scenarioParam && SCENARIO_IDS.has(scenarioParam) ? scenarioParam : null;
-  const limitPer = Number(url.searchParams.get("limit") || 0);
 
-  const where = scenario ? { category: scenario } : { category: { in: [...SCENARIO_IDS] } };
+  // Exclude VIDEO media. Instagram posts are IMAGE, CAROUSEL_ALBUM, or VIDEO.
+  const baseWhere = {
+    mediaType: { not: "VIDEO" },
+    category: scenario ? scenario : { in: [...SCENARIO_IDS] },
+  };
 
   const [rows, creatorLinks, totalAll, mentionCount] = await Promise.all([
     prisma.visibleMention.findMany({
-      where,
+      where: baseWhere,
       orderBy: [{ featured: "desc" }, { timestamp: "desc" }],
     }),
     getAllCreatorLinks(),
-    prisma.visibleMention.count({ where: { category: { in: [...SCENARIO_IDS] } } }),
-    prisma.mention.count(),
+    prisma.visibleMention.count({
+      where: { mediaType: { not: "VIDEO" }, category: { in: [...SCENARIO_IDS] } },
+    }),
+    prisma.mention.count({ where: { mediaType: { not: "VIDEO" } } }),
   ]);
 
   const items = rows.map((row) => {
@@ -59,38 +60,25 @@ export async function loader({ request }) {
     return api;
   });
 
-  const videos = items.filter((i) => isVideo(i.media_type));
-  const photos = items.filter((i) => !isVideo(i.media_type));
-
   const byScenario = {};
   for (const s of SCENARIOS) {
     byScenario[s.id] = {
       label: s.label,
-      videos: videos.filter((v) => v.category === s.id),
-      photos: photos.filter((p) => p.category === s.id),
+      posts: items.filter((p) => p.category === s.id),
     };
   }
 
   const counts = {};
   for (const s of SCENARIOS) {
-    counts[s.id] = {
-      videos: byScenario[s.id].videos.length,
-      photos: byScenario[s.id].photos.length,
-      total:  byScenario[s.id].videos.length + byScenario[s.id].photos.length,
-    };
+    counts[s.id] = { posts: byScenario[s.id].posts.length };
   }
-  counts.all = {
-    videos: videos.length,
-    photos: photos.length,
-    total:  videos.length + photos.length,
-  };
+  counts.all = { posts: items.length };
 
   return json(
     {
       scenarios: SCENARIOS,
       counts,
-      videos,
-      photos,
+      posts: items,
       by_scenario: byScenario,
       stats: {
         total_curated: totalAll,

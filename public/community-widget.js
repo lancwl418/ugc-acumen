@@ -37,7 +37,6 @@
   // ─── State ──────────────────────────────────────────────
   const state = {
     scenario: "all",
-    tab: "videos",
     data: null,         // /api-community payload
     ambassadors: null,  // /api-ambassadors payload
     error: null,
@@ -385,129 +384,24 @@
     const tabs = el("div", { class: "ac-tabs" });
 
     for (const s of SCENARIOS) {
-      const count = state.data?.counts?.[s.id]?.total ?? (s.id === "all" ? state.data?.counts?.all?.total : 0);
+      const count = state.data?.counts?.[s.id]?.posts ?? 0;
       const btn = el("button", {
         class: "ac-tab" + (state.scenario === s.id ? " is-active" : ""),
         onclick: () => { state.scenario = s.id; render(); },
       });
-      btn.innerHTML = `${escapeHTML(s.label)} <span class="count">${count || 0}</span>`;
+      btn.innerHTML = `${escapeHTML(s.label)} <span class="count">${count}</span>`;
       tabs.appendChild(btn);
     }
 
     row.appendChild(tabs);
     wrap.appendChild(row);
     root.appendChild(wrap);
-  }
-
-  // ─── Render: Media sub-tabs ─────────────────────────────
-  function renderMediaTabs(root) {
-    const counts = state.scenario === "all"
-      ? state.data?.counts?.all || { videos: 0, photos: 0 }
-      : state.data?.counts?.[state.scenario] || { videos: 0, photos: 0 };
-
-    const wrap = el("div", { class: "ac-shell" });
-    const row = el("div", { class: "ac-sub-tabs-row" });
-
-    const context = el("div", { class: "ac-sub-tabs-context" });
-    context.innerHTML = `<span class="ac-mono">Viewing</span><span class="ac-sub-tabs-scenario">${escapeHTML(scenarioLabel(state.scenario))}</span>`;
-    row.appendChild(context);
-
-    const tabs = el("div", { class: "ac-sub-tabs" });
-    for (const t of [
-      { id: "videos", label: "Video clips", count: counts.videos },
-      { id: "posts",  label: "Photos & stories", count: counts.photos },
-    ]) {
-      const btn = el("button", {
-        class: "ac-sub-tab" + (state.tab === t.id ? " is-active" : ""),
-        onclick: () => { state.tab = t.id; render(); },
-      });
-      btn.innerHTML = `${escapeHTML(t.label)} <span class="ac-sub-count">${t.count}</span>`;
-      tabs.appendChild(btn);
-    }
-    row.appendChild(tabs);
-
-    wrap.appendChild(row);
-    root.appendChild(wrap);
-  }
-
-  // ─── Render: Video card ─────────────────────────────────
-  function videoCardHTML(v, opts) {
-    const isFeature = !!opts?.feature;
-    const thumbStyle = `background:${stripeBackground(v.category)};`;
-    const thumb = v.thumbnail_url || (v.media_type === "IMAGE" ? v.media_url : "");
-    const innerThumb = thumb
-      ? `<img src="${escapeHTML(thumb)}" loading="lazy" alt=""/>`
-      : (v.media_type === "VIDEO" && v.media_url
-          ? `<video src="${escapeHTML(v.media_url)}" muted preload="metadata" playsinline></video>`
-          : "");
-    const ambHTML = v.is_ambassador ? ambassadorChipHTML() : "";
-
-    return `
-      <article class="ac-v-card${isFeature ? " feature" : ""}">
-        <a class="ac-v-thumb" href="${escapeHTML(v.permalink || "#")}" target="_blank" rel="noopener" style="${thumbStyle}">
-          ${innerThumb}
-          <div class="ac-v-top">
-            <span class="ac-v-tag">${escapeHTML(scenarioLabel(v.category))}</span>
-          </div>
-          <span class="ac-v-play" aria-label="Play">${playIconHTML()}</span>
-        </a>
-        <div class="ac-v-meta">
-          <h3 class="ac-v-title">${escapeHTML(truncate(v.caption || "Untitled clip", isFeature ? 140 : 90))}</h3>
-          <div class="ac-v-byline">
-            <span class="ac-avatar">${v.profile_pic_url
-              ? `<img src="${escapeHTML(v.profile_pic_url)}" alt=""/>`
-              : escapeHTML(initialsOf(v.display_name || v.username))}</span>
-            <span>${escapeHTML(v.display_name || v.username)}</span>
-            ${ambHTML}
-            <div class="ac-v-stats">
-              <span>${eyeIconHTML()} ${formatCount(v.like_count + v.comments_count)}</span>
-              <span>${heartIconHTML()} ${formatCount(v.like_count)}</span>
-            </div>
-          </div>
-        </div>
-      </article>
-    `;
   }
 
   function truncate(s, n) {
     if (!s) return "";
     const flat = String(s).replace(/\s+/g, " ").trim();
     return flat.length > n ? flat.slice(0, n - 1) + "…" : flat;
-  }
-
-  // ─── Render: Videos view ────────────────────────────────
-  function renderVideos(root) {
-    const wrap = el("div", { class: "ac-shell" });
-    if (state.scenario === "all") {
-      for (const s of SCENARIOS.filter((x) => x.id !== "all")) {
-        const items = state.data.by_scenario[s.id]?.videos || [];
-        if (!items.length) continue;
-        const section = el("section", { class: "ac-section" });
-        section.innerHTML = `
-          <div class="ac-section-head">
-            <div>
-              <h2 class="ac-section-title">${escapeHTML(s.label)}.</h2>
-              <div class="ac-section-sub">${escapeHTML(SCENARIO_BLURB[s.id] || "")}</div>
-            </div>
-          </div>
-          <div class="ac-video-grid">
-            ${items.slice(0, 3).map((v, i) => videoCardHTML(v, { feature: i === 0 && items.length >= 3 })).join("")}
-          </div>
-        `;
-        wrap.appendChild(section);
-      }
-    } else {
-      const items = state.data.by_scenario[state.scenario]?.videos || [];
-      if (!items.length) {
-        wrap.appendChild(emptyState("No clips in this scenario yet."));
-      } else {
-        const grid = el("div", { class: "ac-video-grid" });
-        grid.style.marginTop = "8px";
-        grid.innerHTML = items.map((v, i) => videoCardHTML(v, { feature: i === 0 && items.length >= 4 })).join("");
-        wrap.appendChild(grid);
-      }
-    }
-    root.appendChild(wrap);
   }
 
   // ─── Render: Posts view (photo cards) ───────────────────
@@ -550,7 +444,7 @@
     const wrap = el("div", { class: "ac-shell" });
     if (state.scenario === "all") {
       for (const s of SCENARIOS.filter((x) => x.id !== "all")) {
-        const items = state.data.by_scenario[s.id]?.photos || [];
+        const items = state.data.by_scenario[s.id]?.posts || [];
         if (!items.length) continue;
         const section = el("section", { class: "ac-section" });
         section.innerHTML = `
@@ -565,9 +459,9 @@
         wrap.appendChild(section);
       }
     } else {
-      const items = state.data.by_scenario[state.scenario]?.photos || [];
+      const items = state.data.by_scenario[state.scenario]?.posts || [];
       if (!items.length) {
-        wrap.appendChild(emptyState("No stories in this scenario yet."));
+        wrap.appendChild(emptyState("No posts in this scenario yet."));
       } else {
         const masonry = el("div", { class: "ac-masonry" });
         masonry.style.marginTop = "8px";
@@ -636,14 +530,12 @@
     renderHero(mount, state.data);
     renderAmbassadorRail(mount, state.ambassadors);
     renderScenarioTabs(mount);
-    renderMediaTabs(mount);
 
     const main = el("main");
-    main.style.paddingTop = "20px";
+    main.style.paddingTop = "28px";
     main.style.paddingBottom = "16px";
     mount.appendChild(main);
-    if (state.tab === "videos") renderVideos(main);
-    else renderPosts(main);
+    renderPosts(main);
 
     renderSubmitCTA(mount);
   }
