@@ -171,7 +171,7 @@ export async function action({ request }) {
     const e = JSON.parse(s);
     return {
       id: String(e.id),
-      category: e.category || "camping",
+      category: e.category || "daily",
       products: Array.isArray(e.products) ? e.products : [],
       username: e.username || "",
       timestamp: e.timestamp || "",
@@ -356,6 +356,9 @@ function Section({ title, source, pool, visible, products, saver }) {
   const [selected, setSelected] = useState(initialSelected);
   const opRef = useRef(null);
 
+  const isSaving = saver.state !== "idle";
+  const saveResult = saver.state === "idle" ? saver.data : null;
+
   const toggle = (id, seed) =>
     setSelected((prev) => {
       const n = new Map(prev);
@@ -396,8 +399,22 @@ function Section({ title, source, pool, visible, products, saver }) {
 
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h2" variant="headingLg">{title}</Text>
-        <InlineStack gap="200">
-          <Button submit onClick={() => { if (opRef.current) opRef.current.value = "saveVisible"; }} primary>Save visible list (mentions)</Button>
+        <InlineStack gap="300" blockAlign="center">
+          {isSaving && <Text as="span" tone="subdued">保存中…（上传媒体到 CDN，可能需要几秒）</Text>}
+          {saveResult?.ok && (
+            <Text as="span" tone="success">
+              ✓ 已保存 {saveResult.count ?? saveResult.total ?? 0} 条
+            </Text>
+          )}
+          <Button
+            submit
+            onClick={() => { if (opRef.current) opRef.current.value = "saveVisible"; }}
+            primary
+            loading={isSaving}
+            disabled={isSaving}
+          >
+            {isSaving ? "Saving…" : "Save visible list (mentions)"}
+          </Button>
         </InlineStack>
       </InlineStack>
 
@@ -406,7 +423,7 @@ function Section({ title, source, pool, visible, products, saver }) {
           const isVideo = item.media_type === "VIDEO";
           const picked = selected.get(String(item.id));
           const isChecked = !!picked;
-          const category = picked?.category || "camping";
+          const category = picked?.category || "daily";
           const chosenProducts = picked?.products || [];
           const isFeatured = !!picked?.featured;
           const thumb = item.thumbnail_url || item.media_url || TINY;
@@ -500,7 +517,7 @@ function GridSkeleton() {
 
 function seedToVisible(seed, prev) {
   return {
-    category: prev?.category || "camping",
+    category: prev?.category || "daily",
     products: prev?.products || [],
     id: seed.id,
     username: seed.username || "",
