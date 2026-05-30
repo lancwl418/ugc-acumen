@@ -184,27 +184,50 @@ export async function action({ request }) {
     };
   });
 
-  async function ensureOnCDN(e) {
-    const base = (process.env.CF_R2_PUBLIC_BASE || "").replace(/\/+$/, "");
-    if (base && e.media_url && e.media_url.startsWith(base + "/")) return e;
+  const R2_BASE = (process.env.CF_R2_PUBLIC_BASE || "").replace(/\/+$/, "");
+  const onR2 = (u) => !!(R2_BASE && u && u.startsWith(R2_BASE + "/"));
 
-    const res = await fetch(e.media_url, { redirect: "follow" });
-    if (!res.ok) throw new Error(`fetch media ${e.id} failed: ${res.status}`);
+  // Download a remote URL and put it on R2; returns the public CDN url.
+  async function fetchToR2(url, keyNoExt, mediaTypeHint) {
+    const res = await fetch(url, { redirect: "follow" });
+    if (!res.ok) throw new Error(`fetch ${keyNoExt} failed: ${res.status}`);
     const ct = res.headers.get("content-type") || "application/octet-stream";
     const buf = Buffer.from(await res.arrayBuffer());
+    const ext = ct.includes("jpeg") ? "jpg"
+      : ct.includes("png") ? "png"
+      : ct.includes("webp") ? "webp"
+      : ct.includes("gif") ? "gif"
+      : ct.includes("mp4") ? "mp4"
+      : (mediaTypeHint === "VIDEO" ? "mp4" : "bin");
+    return r2PutObject(`${keyNoExt}.${ext}`, buf, ct);
+  }
 
-    const ext = (() => {
-      if (ct.includes("jpeg")) return "jpg";
-      if (ct.includes("png")) return "png";
-      if (ct.includes("webp")) return "webp";
-      if (ct.includes("gif")) return "gif";
-      if (ct.includes("mp4")) return "mp4";
-      return e.media_type === "VIDEO" ? "mp4" : "bin";
-    })();
+  async function ensureOnCDN(e) {
+    const dir = `mentions/${e.username || "author"}`;
+    const out = { ...e };
 
-    const key = `mentions/${e.username || "author"}/${e.id}.${ext}`;
-    const cdnUrl = await r2PutObject(key, buf, ct);
-    return { ...e, media_url: cdnUrl, thumbnail_url: e.thumbnail_url || cdnUrl };
+    // 1) Main media → R2 (skip if already there).
+    if (out.media_url && !onR2(out.media_url)) {
+      out.media_url = await fetchToR2(out.media_url, `${dir}/${e.id}`, e.media_type);
+    }
+
+    // 2) Thumbnail → R2. Instagram thumbnail URLs expire, so never persist a
+    //    non-R2 thumbnail. For images the R2 media doubles as the thumbnail;
+    //    for videos upload the poster separately, dropping it if it's dead.
+    if (e.media_type === "VIDEO") {
+      if (out.thumbnail_url && !onR2(out.thumbnail_url)) {
+        try {
+          out.thumbnail_url = await fetchToR2(out.thumbnail_url, `${dir}/${e.id}-poster`, "IMAGE");
+        } catch (err) {
+          console.error("R2 poster upload failed:", e.id, err?.message || err);
+          out.thumbnail_url = null;
+        }
+      }
+    } else {
+      out.thumbnail_url = onR2(out.thumbnail_url) ? out.thumbnail_url : out.media_url;
+    }
+
+    return out;
   }
 
   const uploaded = [];

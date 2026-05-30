@@ -41,34 +41,56 @@ async function isStale() {
   return Date.now() - latest.fetchedAt.getTime() > DAY_MS;
 }
 
-/** 上传单条媒体到 R2 creators/ 文件夹 */
+/** 下载远程 URL 并上传到 R2，返回公开 CDN url */
+async function uploadToR2(url, keyNoExt, mediaTypeHint) {
+  const res = await fetch(url, { redirect: "follow" });
+  if (!res.ok) throw new Error(`fetch ${keyNoExt} failed: ${res.status}`);
+  const ct = res.headers.get("content-type") || "application/octet-stream";
+  const buf = Buffer.from(await res.arrayBuffer());
+  const ext = ct.includes("jpeg") ? "jpg"
+    : ct.includes("png") ? "png"
+    : ct.includes("webp") ? "webp"
+    : ct.includes("gif") ? "gif"
+    : ct.includes("mp4") ? "mp4"
+    : (mediaTypeHint === "VIDEO" ? "mp4" : "jpg");
+  return r2PutObject(`${keyNoExt}.${ext}`, buf, ct);
+}
+
+/** 把单条 mention 的媒体 + 缩略图都落到 R2 creators/ 文件夹 */
 async function ensureOnCDN(entry) {
   const base = (process.env.CF_R2_PUBLIC_BASE || "").replace(/\/+$/, "");
   if (!base) return entry;
-  if (entry.media_url && entry.media_url.startsWith(base + "/")) return entry;
-  if (!entry.media_url) return entry;
+  const onR2 = (u) => !!(u && u.startsWith(base + "/"));
 
-  try {
-    const res = await fetch(entry.media_url, { redirect: "follow" });
-    if (!res.ok) return entry;
-    const ct = res.headers.get("content-type") || "application/octet-stream";
-    const buf = Buffer.from(await res.arrayBuffer());
+  const dir = `creators/${entry.username || "unknown"}`;
+  const out = { ...entry };
 
-    const ext = (() => {
-      if (ct.includes("jpeg")) return "jpg";
-      if (ct.includes("png")) return "png";
-      if (ct.includes("webp")) return "webp";
-      if (ct.includes("mp4")) return "mp4";
-      return entry.media_type === "VIDEO" ? "mp4" : "jpg";
-    })();
-
-    const key = `creators/${entry.username || "unknown"}/${entry.id}.${ext}`;
-    const cdnUrl = await r2PutObject(key, buf, ct);
-    return { ...entry, media_url: cdnUrl, thumbnail_url: entry.thumbnail_url || cdnUrl };
-  } catch (err) {
-    console.error("[syncAllMentions] R2 upload failed:", entry.id, err?.message || err);
-    return entry;
+  // 1) 主媒体 → R2（已在 R2 则跳过）
+  if (out.media_url && !onR2(out.media_url)) {
+    try {
+      out.media_url = await uploadToR2(out.media_url, `${dir}/${entry.id}`, entry.media_type);
+    } catch (err) {
+      console.error("[syncAllMentions] R2 media upload failed:", entry.id, err?.message || err);
+      return entry; // 主媒体失败则整条保持原样
+    }
   }
+
+  // 2) 缩略图 → R2。Instagram 缩略图会过期，绝不持久化非 R2 链接。
+  //    图片：R2 主图即缩略图；视频：单独上传封面（sync 时封面还有效），失败则置空。
+  if (entry.media_type === "VIDEO") {
+    if (out.thumbnail_url && !onR2(out.thumbnail_url)) {
+      try {
+        out.thumbnail_url = await uploadToR2(out.thumbnail_url, `${dir}/${entry.id}-poster`, "IMAGE");
+      } catch (err) {
+        console.error("[syncAllMentions] R2 poster upload failed:", entry.id, err?.message || err);
+        out.thumbnail_url = null;
+      }
+    }
+  } else {
+    out.thumbnail_url = onR2(out.thumbnail_url) ? out.thumbnail_url : out.media_url;
+  }
+
+  return out;
 }
 
 /** 并发控制 */
@@ -113,26 +135,18 @@ async function fetchAndPersist(maxItems = 100) {
   const existingMap = new Map(existingRows.map(r => [r.id, r.mediaUrl]));
   const base = (process.env.CF_R2_PUBLIC_BASE || "").replace(/\/+$/, "");
 
-  // 找出需要上传 CDN 的新条目
-  const needCDN = [];
-  const alreadyCDN = [];
-  for (const item of all) {
+  // 媒体已在 R2 的条目复用旧 URL（ensureOnCDN 会据此跳过主媒体重传），但
+  // 仍让每一条都走 ensureOnCDN —— 这样缩略图也会被归一化到 R2（Instagram
+  // 缩略图会过期，不能每次 sync 又写回 Instagram 链接）。
+  const prepared = all.map((item) => {
     const prevUrl = existingMap.get(String(item.id));
-    if (prevUrl && base && prevUrl.startsWith(base + "/")) {
-      alreadyCDN.push({ ...item, media_url: prevUrl, thumbnail_url: item.thumbnail_url || prevUrl });
-    } else {
-      needCDN.push(item);
-    }
-  }
+    return (prevUrl && base && prevUrl.startsWith(base + "/"))
+      ? { ...item, media_url: prevUrl }
+      : item;
+  });
 
-  // 并发上传 CDN
-  let uploaded = [];
-  if (needCDN.length > 0) {
-    console.log(`[syncAllMentions] uploading ${needCDN.length} items to R2`);
-    uploaded = await mapWithLimit(needCDN, CDN_CONCURRENCY, ensureOnCDN);
-  }
-
-  const merged = [...alreadyCDN, ...uploaded];
+  console.log(`[syncAllMentions] normalizing ${prepared.length} items onto R2`);
+  const merged = await mapWithLimit(prepared, CDN_CONCURRENCY, ensureOnCDN);
 
   // Upsert 到 Mention 表
   const nowISO = new Date();
