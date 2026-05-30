@@ -53,12 +53,25 @@ export async function loader({ request }) {
     getProducts(),
   ]);
 
+  // Cap the deferred Instagram fetch below entry.server's 6s stream-abort
+  // (streamTimeout 5000 + 1000). If Instagram is slow, degrade to an empty
+  // page instead of letting React abort the whole render.
+  const TAG_FETCH_BUDGET = 4500;
   const tagPromise = (async () => {
+    const empty = { items: [], nextAfter: "", pageSize: tSize, timedOut: false };
     try {
-      const page = await fetchTagUGCPage({ limit: tSize, after: tAfter });
-      return { items: page.items || [], nextAfter: page.nextAfter || "", pageSize: tSize };
+      const timeout = new Promise((resolve) =>
+        setTimeout(() => resolve({ ...empty, timedOut: true }), TAG_FETCH_BUDGET)
+      );
+      const fetched = fetchTagUGCPage({ limit: tSize, after: tAfter }).then((page) => ({
+        items: page.items || [],
+        nextAfter: page.nextAfter || "",
+        pageSize: tSize,
+        timedOut: false,
+      }));
+      return await Promise.race([fetched, timeout]);
     } catch {
-      return { items: [], nextAfter: "", pageSize: tSize };
+      return empty;
     }
   })();
 
@@ -254,9 +267,15 @@ export default function AdminMentionsUGC() {
                 <>
                   {Array.isArray(t.items) && t.items.length === 0 && (
                     <div style={{ marginBottom: 12 }}>
-                      <Banner tone="info" title="No items returned">
-                        <p>/tags 暂无结果，检查 token 权限或稍后重试。</p>
-                      </Banner>
+                      {t.timedOut ? (
+                        <Banner tone="warning" title="Instagram 拉取超时">
+                          <p>从 Instagram 拉取 /tags 超过 4.5s，已跳过本次加载（不影响已保存的内容）。刷新页面可重试。</p>
+                        </Banner>
+                      ) : (
+                        <Banner tone="info" title="No items returned">
+                          <p>/tags 暂无结果，检查 token 权限或稍后重试。</p>
+                        </Banner>
+                      )}
                     </div>
                   )}
 
