@@ -10,11 +10,12 @@ import { CustomerSearchPopover } from "../components/CustomerSearchPopover.jsx";
 import prisma from "../db.server.js";
 
 const SCENARIO_OPTIONS = [
-  { label: "Daily Safety", value: "daily" },
-  { label: "RV & Overland", value: "rv" },
-  { label: "Adventure", value: "adventure" },
-  { label: "Event Capture", value: "event" },
-  { label: "Installation", value: "install" },
+  { label: "Driving Safety", value: "driving" },
+  { label: "Towing & Camping", value: "towing" },
+  { label: "Off-road & Overland", value: "offroad" },
+  { label: "Fleet & Commercial", value: "fleet" },
+  { label: "UTV & Utility", value: "utv" },
+  { label: "Marine Life", value: "marine" },
 ];
 
 const TINY =

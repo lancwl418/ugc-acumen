@@ -15,11 +15,12 @@ import { fetchTagUGCPage, refreshMediaUrlByTag, scanTagsUntil } from "../lib/ins
 import { r2PutObject } from "../lib/r2Client.server.js";
 
 const CATEGORY_OPTIONS = [
-  { label: "Daily Safety", value: "daily" },
-  { label: "RV & Overland", value: "rv" },
-  { label: "Adventure", value: "adventure" },
-  { label: "Event Capture", value: "event" },
-  { label: "Installation", value: "install" },
+  { label: "Driving Safety", value: "driving" },
+  { label: "Towing & Camping", value: "towing" },
+  { label: "Off-road & Overland", value: "offroad" },
+  { label: "Fleet & Commercial", value: "fleet" },
+  { label: "UTV & Utility", value: "utv" },
+  { label: "Marine Life", value: "marine" },
 ];
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
@@ -171,7 +172,7 @@ export async function action({ request }) {
     const e = JSON.parse(s);
     return {
       id: String(e.id),
-      category: e.category || "daily",
+      category: e.category || "driving",
       products: Array.isArray(e.products) ? e.products : [],
       username: e.username || "",
       timestamp: e.timestamp || "",
@@ -446,7 +447,7 @@ function Section({ title, source, pool, visible, products, saver }) {
           const isVideo = item.media_type === "VIDEO";
           const picked = selected.get(String(item.id));
           const isChecked = !!picked;
-          const category = picked?.category || "daily";
+          const category = picked?.category || "driving";
           const chosenProducts = picked?.products || [];
           const isFeatured = !!picked?.featured;
           const thumb = item.thumbnail_url || item.media_url || TINY;
@@ -540,7 +541,7 @@ function GridSkeleton() {
 
 function seedToVisible(seed, prev) {
   return {
-    category: prev?.category || "daily",
+    category: prev?.category || "driving",
     products: prev?.products || [],
     id: seed.id,
     username: seed.username || "",

@@ -40,7 +40,7 @@ export function fromAPI(obj) {
     thumbnailUrl: obj.thumbnail_url || null,
     caption: obj.caption || "",
     permalink: obj.permalink || "",
-    category: obj.category || "daily",
+    category: obj.category || "driving",
     products: JSON.stringify(Array.isArray(obj.products) ? obj.products : []),
     featured: !!obj.featured,
     featuredAt: obj.featuredAt ? new Date(obj.featuredAt) : null,

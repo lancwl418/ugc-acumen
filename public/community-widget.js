@@ -9,29 +9,32 @@
   const BASE = "https://ugc.acumen-camera.com";
 
   const SCENARIOS = [
-    { id: "all",       label: "All scenarios" },
-    { id: "daily",     label: "Daily Safety" },
-    { id: "rv",        label: "RV & Overland" },
-    { id: "adventure", label: "Adventure" },
-    { id: "event",     label: "Event Capture" },
-    { id: "install",   label: "Installation" },
+    { id: "all",     label: "All scenarios" },
+    { id: "driving", label: "Driving Safety" },
+    { id: "towing",  label: "Towing & Camping" },
+    { id: "offroad", label: "Off-road & Overland" },
+    { id: "fleet",   label: "Fleet & Commercial" },
+    { id: "utv",     label: "UTV & Utility" },
+    { id: "marine",  label: "Marine Life" },
   ];
 
   const SCENARIO_BLURB = {
-    daily: "Commute incidents, parked-mode catches, near-misses. The boring stuff that pays for the camera.",
-    rv: "Long-haul trips, boondocking, life-on-wheels footage from owners who live in their vehicles.",
-    adventure: "Off-road, snow-line, animal crossings, weather. Where the cameras and the drivers get tested.",
-    event: "Crashes, hit-and-runs, hailstorms — clips that became insurance claims and court evidence.",
-    install: "Tutorials, fuse-tap tips, cable runs, and the rare 'how I screwed this up' confessional.",
+    driving: "Commute incidents, parked-mode catches, near-misses. The boring stuff that pays for the camera.",
+    towing: "RVs, trailers, boondocking, campsite arrivals — long-haul footage from owners who live on the road.",
+    offroad: "Trails, snow-line, river crossings, overland routes. Where the cameras and the drivers get tested.",
+    fleet: "Vans, work trucks, delivery routes and rideshare — cameras earning their keep on the clock.",
+    utv: "Side-by-sides, ATVs, ranch and dune runs — utility rigs that double as toys.",
+    marine: "Boats, jet skis, ramps and docks — clips from the water and the launch.",
   };
 
   // Palette tones used for placeholder backgrounds when no thumbnail
   const TONE = {
-    daily:     { a: "#3A4756", b: "#1F2730" },
-    rv:        { a: "#A87A4E", b: "#5C3E22" },
-    adventure: { a: "#3F5D45", b: "#1B2A21" },
-    event:     { a: "#7A3C46", b: "#34161D" },
-    install:   { a: "#5C5650", b: "#2E2A26" },
+    driving: { a: "#3A4756", b: "#1F2730" },
+    towing:  { a: "#A87A4E", b: "#5C3E22" },
+    offroad: { a: "#3F5D45", b: "#1B2A21" },
+    fleet:   { a: "#5C5650", b: "#2E2A26" },
+    utv:     { a: "#8A6B33", b: "#3E2F16" },
+    marine:  { a: "#2F5C6B", b: "#13313A" },
   };
 
   // ─── State ──────────────────────────────────────────────
@@ -283,7 +286,7 @@
   }
 
   function scenarioTone(id) {
-    return TONE[id] || TONE.daily;
+    return TONE[id] || TONE.driving;
   }
 
   function stripeBackground(id) {
@@ -351,7 +354,7 @@
       const card = el("article", { class: "ac-amb-card" });
       const portraitHTML = a.profile_pic_url
         ? `<img src="${escapeHTML(a.profile_pic_url)}" alt="${escapeHTML(a.display_name)}" loading="lazy"/>`
-        : `<div style="position:absolute;inset:0;background:${stripeBackground((a.scenarios && a.scenarios[0]) || "daily")};opacity:.55;"></div>`;
+        : `<div style="position:absolute;inset:0;background:${stripeBackground((a.scenarios && a.scenarios[0]) || "driving")};opacity:.55;"></div>`;
       card.innerHTML = `
         <div class="ac-amb-portrait">
           ${portraitHTML}

@@ -14,11 +14,12 @@ const CORS = {
 };
 
 export const SCENARIOS = [
-  { id: "daily",     label: "Daily Safety" },
-  { id: "rv",        label: "RV & Overland" },
-  { id: "adventure", label: "Adventure" },
-  { id: "event",     label: "Event Capture" },
-  { id: "install",   label: "Installation" },
+  { id: "driving", label: "Driving Safety" },
+  { id: "towing",  label: "Towing & Camping" },
+  { id: "offroad", label: "Off-road & Overland" },
+  { id: "fleet",   label: "Fleet & Commercial" },
+  { id: "utv",     label: "UTV & Utility" },
+  { id: "marine",  label: "Marine Life" },
 ];
 
 const SCENARIO_IDS = new Set(SCENARIOS.map((s) => s.id));

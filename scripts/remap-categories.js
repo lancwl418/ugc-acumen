@@ -1,6 +1,5 @@
-// One-time script: remap old VisibleMention.category values to the 5
-// community scenarios used by the new /api-community endpoint and the
-// community-widget.js storefront page.
+// One-time script: remap VisibleMention.category values to the 6 community
+// scenarios used by the new /api-community endpoint and community-widget.js.
 //
 // Usage:
 //   node scripts/remap-categories.js              # dry run (shows what would change)
@@ -12,18 +11,36 @@ import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
-// Old category → new scenario mapping.
-// Tweak the right-hand side and re-run if you disagree with any of these.
+// Old/legacy category → new scenario mapping.
+// Covers both the previous 5-scenario set (daily/rv/adventure/event/install)
+// and the original raw labels (camping/off-road/electronic/travel/...).
+//
+// "install" is intentionally absent — those rows stay as-is until re-tagged
+// by hand in the admin (they will be invisible to /api-community in the
+// meantime).
 const MAP = {
-  "off-road":      "adventure",   // Off-Road Adventure   → Adventure
-  "camping":       "rv",          // Camping & Towing     → RV & Overland
-  "electronic":    "daily",       // Everyday Protection  → Daily Safety
-  "travel":        "daily",       // Commercial & Fleet   → Daily Safety
-  "documentation": "event",       // Documentation        → Event Capture
-  "events":        "adventure",   // UTV/SxS              → Adventure
+  // Previous 5-scenario set
+  "daily":         "driving",
+  "rv":            "towing",
+  "adventure":     "offroad",
+  "event":         "driving",
+  // Original raw labels (pre-first-remap)
+  "camping":       "towing",
+  "off-road":      "offroad",
+  "electronic":    "driving",
+  "travel":        "driving",
+  "documentation": "driving",
+  "events":        "offroad",
 };
 
-const NEW_SCENARIOS = new Set(["daily", "rv", "adventure", "event", "install"]);
+const NEW_SCENARIOS = new Set([
+  "driving",
+  "towing",
+  "offroad",
+  "fleet",
+  "utv",
+  "marine",
+]);
 
 async function main() {
   const apply = process.argv.includes("--apply");
