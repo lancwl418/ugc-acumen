@@ -58,26 +58,15 @@ export async function loader({ request }) {
     getProducts(),
   ]);
 
-  // Cap the deferred FlashAPI fetch below entry.server's stream-abort
-  // (streamTimeout 15000 + 1000). FlashAPI scrapes and can take several
-  // seconds; give it room so the first load shows data instead of needing a
-  // second refresh. If it still overruns, degrade to an empty page.
-  const TAG_FETCH_BUDGET = 12000;
+  // No fetch timeout — let the FlashAPI mentions fetch run to completion so the
+  // page shows data on first load. flashGet has its own per-request timeout +
+  // retries underneath, and entry.server's streamTimeout is the final safety net.
   const tagPromise = (async () => {
-    const empty = { items: [], nextAfter: "", pageSize: tSize, timedOut: false };
     try {
-      const timeout = new Promise((resolve) =>
-        setTimeout(() => resolve({ ...empty, timedOut: true }), TAG_FETCH_BUDGET)
-      );
-      const fetched = fetchTagUGCPage({ limit: tSize, after: tAfter }).then((page) => ({
-        items: page.items || [],
-        nextAfter: page.nextAfter || "",
-        pageSize: tSize,
-        timedOut: false,
-      }));
-      return await Promise.race([fetched, timeout]);
+      const page = await fetchTagUGCPage({ limit: tSize, after: tAfter });
+      return { items: page.items || [], nextAfter: page.nextAfter || "", pageSize: tSize };
     } catch {
-      return empty;
+      return { items: [], nextAfter: "", pageSize: tSize };
     }
   })();
 
@@ -315,7 +304,7 @@ export default function AdminMentionsUGC() {
             <Await resolve={data.tag}>
               {(t) => (
                 <>
-                  {Array.isArray(t.items) && t.items.length === 0 && !t.timedOut && (
+                  {Array.isArray(t.items) && t.items.length === 0 && (
                     <div style={{ marginBottom: 12 }}>
                       <Banner tone="info" title="No items returned">
                         <p>No results from /tags. Check API credentials or try again later.</p>
