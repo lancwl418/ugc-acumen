@@ -353,14 +353,10 @@ function ManualAdd({ visible, products }) {
   const fetching = linkFetcher.state !== "idle";
   const result = linkFetcher.state === "idle" ? linkFetcher.data : null;
 
-  // 抓取成功后把 item 加入待选池（按 id 去重，最新的在前）。
+  // 每次抓取只显示当前这一条，之前抓过的清掉。
   useEffect(() => {
     if (result?.ok && result.op === "fetchByLink" && result.item) {
-      setItems((prev) =>
-        prev.some((x) => String(x.id) === String(result.item.id))
-          ? prev
-          : [result.item, ...prev]
-      );
+      setItems([result.item]);
       setLink("");
     }
   }, [result]);
