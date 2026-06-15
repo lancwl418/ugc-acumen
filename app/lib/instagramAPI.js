@@ -41,9 +41,18 @@ export async function fetchMediaComments(shortcode, { limit = 20 } = {}) {
     .filter((c) => c.id);
 }
 
+/* ====================== 单帖抓取（手动输入 IG 链接用） ======================= */
+// 按 shortcode 抓单条帖子（/ig/post_info/），归一化成与 mentions 一致的结构。
+export async function fetchPostByShortcode(shortcode) {
+  if (!shortcode) return null;
+  const j = await flashGet("/ig/post_info/", { shortcode });
+  const raw = (j?.items || [])[0];
+  return raw ? normalizeTaggedItem(raw) : null;
+}
+
 /* ====================== 工具：从 permalink 取 shortcode ======================= */
 export function shortcodeFromPermalink(url = "") {
-  const m = String(url).match(/\/(?:p|reel|tv)\/([^/?#]+)/);
+  const m = String(url).match(/\/(?:p|reel|tv|reels)\/([^/?#]+)/);
   return m ? m[1] : "";
 }
 

@@ -5,13 +5,16 @@ import {
 } from "@remix-run/react";
 import {
   Page, Card, Text, Checkbox, Button, Select, Tag, InlineStack,
-  BlockStack, SkeletonBodyText, Banner, Badge,
+  BlockStack, SkeletonBodyText, Banner, Badge, TextField,
 } from "@shopify/polaris";
 import { Suspense, useMemo, useState, useEffect, useRef } from "react";
 import {
   getAllVisible, upsertManyVisible, replaceAllVisible, getProducts,
 } from "../lib/visibleMentions.js";
-import { fetchTagUGCPage, refreshMediaUrlByTag, scanTagsUntil } from "../lib/instagramAPI.js";
+import {
+  fetchTagUGCPage, refreshMediaUrlByTag, scanTagsUntil,
+  fetchPostByShortcode, shortcodeFromPermalink,
+} from "../lib/instagramAPI.js";
 import { r2PutObject } from "../lib/r2Client.server.js";
 
 const CATEGORY_OPTIONS = [
@@ -86,6 +89,23 @@ export async function loader({ request }) {
 export async function action({ request }) {
   const fd = await request.formData();
   const op = fd.get("op");
+
+  // 手动输入 IG 链接 → 按 shortcode 抓单帖，返回归一化后的 item（不写库，
+  // 由前端选好 category 后走常规 saveVisible 流程保存）。
+  if (op === "fetchByLink") {
+    const link = String(fd.get("link") || "").trim();
+    const code = shortcodeFromPermalink(link);
+    if (!code) {
+      return json({ ok: false, op: "fetchByLink", error: "无法识别链接，请粘贴 Instagram 帖子 / Reel 链接" }, { status: 400 });
+    }
+    try {
+      const item = await fetchPostByShortcode(code);
+      if (!item) return json({ ok: false, op: "fetchByLink", error: "未找到该帖子（可能是私密账号或已删除）" });
+      return json({ ok: true, op: "fetchByLink", item });
+    } catch (err) {
+      return json({ ok: false, op: "fetchByLink", error: err?.message || "抓取失败，请稍后重试" });
+    }
+  }
 
   if (op === "refreshVisibleAll") {
     const visible = await getAllVisible();
@@ -284,6 +304,10 @@ export default function AdminMentionsUGC() {
         </div>
       )}
 
+      <div style={{ marginTop: 16 }}>
+        <ManualAdd visible={data.visible} products={data.products} />
+      </div>
+
       <div style={{ display: "flex", flexDirection: "column", minHeight: "calc(100vh - 120px)", marginTop: 16 }}>
         <div style={{ flex: "1 1 auto" }}>
           <Suspense fallback={<GridSkeleton />}>
@@ -323,6 +347,76 @@ export default function AdminMentionsUGC() {
         </div>
       </div>
     </Page>
+  );
+}
+
+function ManualAdd({ visible, products }) {
+  const linkFetcher = useFetcher();
+  const saver = useFetcher();
+  const [link, setLink] = useState("");
+  const [items, setItems] = useState([]);
+
+  const fetching = linkFetcher.state !== "idle";
+  const result = linkFetcher.state === "idle" ? linkFetcher.data : null;
+
+  // 抓取成功后把 item 加入待选池（按 id 去重，最新的在前）。
+  useEffect(() => {
+    if (result?.ok && result.op === "fetchByLink" && result.item) {
+      setItems((prev) =>
+        prev.some((x) => String(x.id) === String(result.item.id))
+          ? prev
+          : [result.item, ...prev]
+      );
+      setLink("");
+    }
+  }, [result]);
+
+  const submit = () => {
+    const v = link.trim();
+    if (!v || fetching) return;
+    linkFetcher.submit({ op: "fetchByLink", link: v }, { method: "post" });
+  };
+
+  return (
+    <Card padding="400">
+      <BlockStack gap="300">
+        <Text as="h2" variant="headingMd">手动添加（输入 Instagram 链接）</Text>
+        <TextField
+          label="Instagram 帖子 / Reel 链接"
+          value={link}
+          onChange={setLink}
+          placeholder="https://www.instagram.com/p/XXXXXXXXX/"
+          autoComplete="off"
+          disabled={fetching}
+          connectedRight={
+            <Button onClick={submit} loading={fetching} disabled={fetching || !link.trim()}>
+              Fetch
+            </Button>
+          }
+        />
+        {result && !result.ok && result.op === "fetchByLink" && (
+          <Banner tone="critical"><p>{result.error}</p></Banner>
+        )}
+        {items.length === 0 && (
+          <Text as="p" tone="subdued" variant="bodySm">
+            粘贴任意 Instagram 帖子/Reel 链接抓取，抓到后在下方勾选 “Show on site”、选好 Category 再保存。
+          </Text>
+        )}
+      </BlockStack>
+
+      {items.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <Section
+            title="Fetched by link"
+            source="manual"
+            pool={items}
+            visible={visible}
+            products={products}
+            saver={saver}
+          />
+        </div>
+      )}
+    </Card>
   );
 }
 
