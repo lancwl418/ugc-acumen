@@ -314,17 +314,11 @@ export default function AdminMentionsUGC() {
             <Await resolve={data.tag}>
               {(t) => (
                 <>
-                  {Array.isArray(t.items) && t.items.length === 0 && (
+                  {Array.isArray(t.items) && t.items.length === 0 && !t.timedOut && (
                     <div style={{ marginBottom: 12 }}>
-                      {t.timedOut ? (
-                        <Banner tone="warning" title="Instagram 拉取超时">
-                          <p>从 Instagram 拉取 /tags 超过 4.5s，已跳过本次加载（不影响已保存的内容）。刷新页面可重试。</p>
-                        </Banner>
-                      ) : (
-                        <Banner tone="info" title="No items returned">
-                          <p>/tags 暂无结果，检查 token 权限或稍后重试。</p>
-                        </Banner>
-                      )}
+                      <Banner tone="info" title="No items returned">
+                        <p>/tags 暂无结果，检查 token 权限或稍后重试。</p>
+                      </Banner>
                     </div>
                   )}
 
