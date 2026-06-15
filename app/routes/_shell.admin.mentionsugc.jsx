@@ -45,9 +45,10 @@ export async function loader({ request }) {
   const tSize = Math.min(40, Math.max(6, Number(url.searchParams.get("tSize") || 12)));
   const tAfter = url.searchParams.get("tAfter") || "";
 
+  // mentions 现在走 FlashAPI（RapidAPI flashapi1），不再依赖 Graph。
   const envMissing = [];
-  if (!process.env.INSTAGRAM_IG_ID) envMissing.push("INSTAGRAM_IG_ID");
-  if (!process.env.INSTAGRAM_ACCESS_TOKEN) envMissing.push("INSTAGRAM_ACCESS_TOKEN");
+  if (!process.env.RAPIDAPI_KEY) envMissing.push("RAPIDAPI_KEY");
+  if (!process.env.INSTAGRAM_USERNAME) envMissing.push("INSTAGRAM_USERNAME");
 
   const [tagVisible, products] = await Promise.all([
     getAllVisible(),

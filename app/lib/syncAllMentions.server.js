@@ -1,7 +1,7 @@
 // app/lib/syncAllMentions.server.js
 // 从 Instagram API 拉全量 mentions，媒体上传 R2 creators/ 文件夹，保存到 DB
 import prisma from "../db.server.js";
-import { fetchTagUGCPage, fetchTagsWithComments } from "./instagramAPI.js";
+import { fetchTagUGCPage, fetchMediaComments, shortcodeFromPermalink } from "./instagramAPI.js";
 import { r2PutObject } from "./r2Client.server.js";
 import { fetchAndStoreProfilePic } from "./instagramProfile.server.js";
 import { updateProfilePic } from "./creatorLinks.server.js";
@@ -181,52 +181,46 @@ async function fetchAndPersist(maxItems = 100) {
     });
   }
 
-  // === 第二轮：用 fetchTagsWithComments 补充 comments ===
-  const allIds = new Set(merged.map(m => String(m.id)));
+  // === 第二轮：用 FlashAPI /ig/comments/ 逐帖补充 comments ===
+  // 仅抓「有评论且 DB 里还没存过评论」的帖子，并限量，避免每秒限流下耗时过长。
+  const COMMENT_FETCH_CAP = 40;
   const withComments = await prisma.comment.findMany({
     select: { mentionId: true },
     distinct: ["mentionId"],
   });
   const idsWithComments = new Set(withComments.map(c => c.mentionId));
-  const needComments = allIds.size - idsWithComments.size;
 
-  if (needComments > 0) {
-    console.log(`[syncAllMentions] fetching comments for ${needComments} posts`);
-    let cAfter = "";
-    let cScanned = 0;
-    const MAX_COMMENT_SCAN = 200;
-    while (cScanned < MAX_COMMENT_SCAN && idsWithComments.size < allIds.size) {
+  const needCommentItems = merged
+    .filter(m => (m.comments_count ?? 0) > 0 && !idsWithComments.has(String(m.id)))
+    .slice(0, COMMENT_FETCH_CAP);
+
+  if (needCommentItems.length > 0) {
+    console.log(`[syncAllMentions] fetching comments for ${needCommentItems.length} posts`);
+    let enriched = 0;
+    for (const item of needCommentItems) {
+      const code = shortcodeFromPermalink(item.permalink);
+      if (!code) continue;
       try {
-        const cPage = await fetchTagsWithComments({ limit: 3, after: cAfter });
-        if (!cPage.items || cPage.items.length === 0) break;
-        for (const cItem of cPage.items) {
-          const cId = String(cItem.id);
-          if (allIds.has(cId) && !idsWithComments.has(cId) && cItem.comments?.length > 0) {
-            for (const c of cItem.comments) {
-              await prisma.comment.upsert({
-                where: { id: String(c.id) },
-                update: { text: c.text || "", username: c.username || "", timestamp: new Date(c.timestamp || 0) },
-                create: {
-                  id: String(c.id),
-                  mentionId: cId,
-                  text: c.text || "",
-                  username: c.username || "",
-                  timestamp: new Date(c.timestamp || 0),
-                },
-              });
-            }
-            idsWithComments.add(cId);
-          }
+        const comments = await fetchMediaComments(code, { limit: 20 });
+        for (const c of comments) {
+          await prisma.comment.upsert({
+            where: { id: String(c.id) },
+            update: { text: c.text || "", username: c.username || "", timestamp: new Date(c.timestamp || 0) },
+            create: {
+              id: String(c.id),
+              mentionId: String(item.id),
+              text: c.text || "",
+              username: c.username || "",
+              timestamp: new Date(c.timestamp || 0),
+            },
+          });
         }
-        cScanned += cPage.items.length;
-        cAfter = cPage.nextAfter || "";
-        if (!cAfter) break;
+        if (comments.length) enriched++;
       } catch (err) {
-        console.error("[syncAllMentions] fetchTagsWithComments error:", err?.message || err);
-        break;
+        console.error("[syncAllMentions] fetchMediaComments error:", item.id, err?.message || err);
       }
     }
-    console.log(`[syncAllMentions] comments enriched: ${idsWithComments.size}/${allIds.size}`);
+    console.log(`[syncAllMentions] comments enriched for ${enriched} posts`);
   }
 
   // === 第三轮：自动抓取新 creator 的 profile pic ===

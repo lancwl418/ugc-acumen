@@ -14,6 +14,9 @@ database.sqlite
 .env
 .env.*
 
+# MCP config contains a RapidAPI key — keep out of git
+.mcp.json
+
 
 
 
@@ -23,3 +26,5 @@ database.sqlite
 # Ignore shopify files created during app dev
 .shopify/*
 .shopify.lock
+# local widget preview harness (not for deploy)
+public/_local-test-community.html

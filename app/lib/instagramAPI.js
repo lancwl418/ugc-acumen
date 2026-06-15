@@ -1,124 +1,52 @@
 // app/lib/instagramAPI.js
-// Instagram Graph API — mentions (/tags) 专用接口
-import fetch from "node-fetch";
+// Instagram mentions 抓取 —— 走 FlashAPI（RapidAPI flashapi1），取代 Graph /tags。
+// 「mentions」= 别人发帖时 @标记了品牌账号的内容（即 IG 个人页的 Tagged tab）。
+import {
+  flashGet,
+  resolveUserId,
+  normalizeTaggedItem,
+  withCache,
+} from "./flashAPI.server.js";
 
-const IG_ID      = process.env.INSTAGRAM_IG_ID || "";
-const USER_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN || "";
-const FETCH_TIMEOUT = 10_000; // 10s per request
+/* ====================== Mentions（/ig/tagged/）分页 ======================= */
+// 注意：FlashAPI 每页固定返回约 21 条，不严格遵守 limit。这里不做切片，
+// 以免破坏游标连续性（next_max_id 指向整页末尾）。limit 仅供调用方参考。
+export async function fetchTagUGCPage({ limit = 12, after = "" } = {}) {
+  return withCache(`tag:${after}`, 30_000, async () => {
+    const idUser = await resolveUserId();
+    if (!idUser) return { items: [], nextAfter: "" };
 
-/* ============== 缓存 + 并发限流 ============== */
-const mem = new Map();
-function withCache(key, ms, fn) {
-  const now = Date.now();
-  const hit = mem.get(key);
-  if (hit && hit.expiry > now) return hit.promise;
-  const p = (async () => await fn())();
-  mem.set(key, { expiry: now + ms, promise: p });
-  return p;
-}
-const MAX = 6; let inq = 0; const waiters = [];
-async function withLimit(fn){ if(inq>=MAX) await new Promise(r=>waiters.push(r)); inq++; try{ return await fn(); } finally{ inq--; const n=waiters.shift(); n&&n(); }}
-
-function fetchWithTimeout(url, opts = {}) {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT);
-  return fetch(url, { ...opts, signal: ac.signal }).finally(() => clearTimeout(timer));
-}
-
-/* ====================== Mentions (/tags) 分页 ======================= */
-export async function fetchTagUGCPage({ limit=12, after="" } = {}) {
-  const key = `t:${limit}:${after}`;
-  return withCache(key, 30_000, async () => {
-    if (!IG_ID || !USER_TOKEN) return { items: [], nextAfter: "" };
-
-    const u = new URL(`https://graph.facebook.com/v23.0/${IG_ID}/tags`);
-    u.searchParams.set(
-      "fields",
-      "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,username,like_count,comments_count,children{media_type,media_url,thumbnail_url}"
-    );
-    u.searchParams.set("limit", String(limit));
-    if (after) u.searchParams.set("after", after);
-    u.searchParams.set("access_token", USER_TOKEN);
-
-    const r = await withLimit(()=>fetchWithTimeout(u));
-    const j = await r.json();
-    if (!r.ok || j?.error) throw new Error(j?.error?.message || `Graph ${r.status}`);
-
-    const items = (j.data || []).map(m => {
-      if (m.media_type === "CAROUSEL_ALBUM" && m.children?.data?.length) {
-        const f = m.children.data[0];
-        m.media_type = f.media_type || m.media_type;
-        m.media_url = f.media_url || m.media_url;
-        m.thumbnail_url = f.thumbnail_url || m.thumbnail_url || m.media_url;
-      }
-      return {
-        id: m.id,
-        media_url: m.media_url || m.thumbnail_url || "",
-        thumbnail_url: m.thumbnail_url || null,
-        media_type: m.media_type,
-        caption: m.caption || "",
-        permalink: m.permalink || "",
-        timestamp: m.timestamp || "",
-        username: m.username || "",
-        like_count: m.like_count ?? 0,
-        comments_count: m.comments_count ?? 0,
-      };
-    });
-
-    return { items, nextAfter: j?.paging?.cursors?.after || "" };
+    const j = await flashGet("/ig/tagged/", { id_user: idUser, end_cursor: after });
+    const items = (j?.items || []).map(normalizeTaggedItem).filter((x) => x.id);
+    const nextAfter = j?.more_available ? (j?.next_max_id || "") : "";
+    return { items, nextAfter };
   });
 }
 
-/* ====================== /tags 带 comments edge ======================= */
-export async function fetchTagsWithComments({ limit = 3, after = "" } = {}) {
-  const key = `tc:${limit}:${after}`;
-  return withCache(key, 30_000, async () => {
-    if (!IG_ID || !USER_TOKEN) return { items: [], nextAfter: "" };
-
-    const u = new URL(`https://graph.facebook.com/v23.0/${IG_ID}/tags`);
-    u.searchParams.set(
-      "fields",
-      "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,username,like_count,comments_count,comments{id,text,username,timestamp},children{media_type,media_url,thumbnail_url}"
-    );
-    u.searchParams.set("limit", String(limit));
-    if (after) u.searchParams.set("after", after);
-    u.searchParams.set("access_token", USER_TOKEN);
-
-    const r = await withLimit(() => fetch(u));
-    const j = await r.json();
-    if (!r.ok || j?.error) throw new Error(j?.error?.message || `Graph ${r.status}`);
-
-    const items = (j.data || []).map(m => {
-      if (m.media_type === "CAROUSEL_ALBUM" && m.children?.data?.length) {
-        const f = m.children.data[0];
-        m.media_type = f.media_type || m.media_type;
-        m.media_url = f.media_url || m.media_url;
-        m.thumbnail_url = f.thumbnail_url || m.thumbnail_url || m.media_url;
-      }
+/* ====================== 单帖评论（/ig/comments/） ======================= */
+export async function fetchMediaComments(shortcode, { limit = 20 } = {}) {
+  if (!shortcode) return [];
+  const j = await flashGet("/ig/comments/", { shortcode, sort: "recent" });
+  return (j?.comments || [])
+    .slice(0, limit)
+    .map((c) => {
+      const ts = c.created_at || c.created_at_utc;
       return {
-        id: m.id,
-        media_url: m.media_url || m.thumbnail_url || "",
-        thumbnail_url: m.thumbnail_url || null,
-        media_type: m.media_type,
-        caption: m.caption || "",
-        permalink: m.permalink || "",
-        timestamp: m.timestamp || "",
-        username: m.username || "",
-        like_count: m.like_count ?? 0,
-        comments_count: m.comments_count ?? 0,
-        comments: (m.comments?.data || []).map(c => ({
-          id: c.id,
-          text: c.text || "",
-          username: c.username || "",
-          timestamp: c.timestamp || "",
-        })),
+        id: String(c.pk || c.id || ""),
+        text: c.text || "",
+        username: c.user?.username || "",
+        timestamp: ts ? new Date(ts * 1000).toISOString() : "",
       };
-    });
-
-    return { items, nextAfter: j?.paging?.cursors?.after || "" };
-  });
+    })
+    .filter((c) => c.id);
 }
 
-/* ======= refresh / scan stubs ======= */
-export async function refreshMediaUrlByTag(entry, opts){ /* 原样保留 */ }
-export async function scanTagsUntil(opts){ /* 原样保留 */ }
+/* ====================== 工具：从 permalink 取 shortcode ======================= */
+export function shortcodeFromPermalink(url = "") {
+  const m = String(url).match(/\/(?:p|reel|tv)\/([^/?#]+)/);
+  return m ? m[1] : "";
+}
+
+/* ======= 兼容旧接口的 stub（保留导出，避免破坏外部引用） ======= */
+export async function refreshMediaUrlByTag(/* entry, opts */) { /* 原样保留 */ }
+export async function scanTagsUntil(/* opts */) { /* 原样保留 */ }
