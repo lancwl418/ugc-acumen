@@ -6,7 +6,9 @@ import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
 import "dotenv/config";
 
-export const streamTimeout = 5000;
+// Allow deferred data (e.g. the FlashAPI mentions fetch, which scrapes and can
+// take several seconds) to stream in before the SSR stream is aborted.
+export const streamTimeout = 15000;
 
 export default async function handleRequest(
   request,

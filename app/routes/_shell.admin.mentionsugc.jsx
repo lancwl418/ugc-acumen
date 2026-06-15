@@ -58,10 +58,11 @@ export async function loader({ request }) {
     getProducts(),
   ]);
 
-  // Cap the deferred Instagram fetch below entry.server's 6s stream-abort
-  // (streamTimeout 5000 + 1000). If Instagram is slow, degrade to an empty
-  // page instead of letting React abort the whole render.
-  const TAG_FETCH_BUDGET = 4500;
+  // Cap the deferred FlashAPI fetch below entry.server's stream-abort
+  // (streamTimeout 15000 + 1000). FlashAPI scrapes and can take several
+  // seconds; give it room so the first load shows data instead of needing a
+  // second refresh. If it still overruns, degrade to an empty page.
+  const TAG_FETCH_BUDGET = 12000;
   const tagPromise = (async () => {
     const empty = { items: [], nextAfter: "", pageSize: tSize, timedOut: false };
     try {
