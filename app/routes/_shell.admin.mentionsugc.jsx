@@ -96,14 +96,14 @@ export async function action({ request }) {
     const link = String(fd.get("link") || "").trim();
     const code = shortcodeFromPermalink(link);
     if (!code) {
-      return json({ ok: false, op: "fetchByLink", error: "无法识别链接，请粘贴 Instagram 帖子 / Reel 链接" }, { status: 400 });
+      return json({ ok: false, op: "fetchByLink", error: "Could not read the link — paste an Instagram post / Reel URL" }, { status: 400 });
     }
     try {
       const item = await fetchPostByShortcode(code);
-      if (!item) return json({ ok: false, op: "fetchByLink", error: "未找到该帖子（可能是私密账号或已删除）" });
+      if (!item) return json({ ok: false, op: "fetchByLink", error: "Post not found (it may be private or deleted)" });
       return json({ ok: true, op: "fetchByLink", item });
     } catch (err) {
-      return json({ ok: false, op: "fetchByLink", error: err?.message || "抓取失败，请稍后重试" });
+      return json({ ok: false, op: "fetchByLink", error: err?.message || "Fetch failed, please try again" });
     }
   }
 
@@ -293,13 +293,13 @@ export default function AdminMentionsUGC() {
     <Page>
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h1" variant="headingLg">UGC Admin — Mentions (tags)</Text>
-        <Text as="span" tone="subdued">前端只读 VisibleMention 表</Text>
+        <Text as="span" tone="subdued">Storefront reads the VisibleMention table only</Text>
       </InlineStack>
 
       {(data?.envMissing?.length > 0) && (
         <div style={{ marginTop: 12 }}>
           <Banner tone="critical" title="Missing Instagram credentials">
-            <p>Missing env: {data.envMissing.join(", ")}。</p>
+            <p>Missing env: {data.envMissing.join(", ")}.</p>
           </Banner>
         </div>
       )}
@@ -317,7 +317,7 @@ export default function AdminMentionsUGC() {
                   {Array.isArray(t.items) && t.items.length === 0 && !t.timedOut && (
                     <div style={{ marginBottom: 12 }}>
                       <Banner tone="info" title="No items returned">
-                        <p>/tags 暂无结果，检查 token 权限或稍后重试。</p>
+                        <p>No results from /tags. Check API credentials or try again later.</p>
                       </Banner>
                     </div>
                   )}
@@ -370,9 +370,9 @@ function ManualAdd({ visible, products }) {
   return (
     <Card padding="400">
       <BlockStack gap="300">
-        <Text as="h2" variant="headingMd">手动添加（输入 Instagram 链接）</Text>
+        <Text as="h2" variant="headingMd">Add manually (paste an Instagram link)</Text>
         <TextField
-          label="Instagram 帖子 / Reel 链接"
+          label="Instagram post / Reel URL"
           value={link}
           onChange={setLink}
           placeholder="https://www.instagram.com/p/XXXXXXXXX/"
@@ -389,7 +389,7 @@ function ManualAdd({ visible, products }) {
         )}
         {items.length === 0 && (
           <Text as="p" tone="subdued" variant="bodySm">
-            粘贴任意 Instagram 帖子/Reel 链接抓取，抓到后在下方勾选 “Show on site”、选好 Category 再保存。
+            Paste any Instagram post/Reel URL to fetch it, then tick “Show on site”, pick a Category, and save.
           </Text>
         )}
       </BlockStack>
@@ -509,10 +509,10 @@ function Section({ title, source, pool, visible, products, saver }) {
       <InlineStack align="space-between" blockAlign="center">
         <Text as="h2" variant="headingLg">{title}</Text>
         <InlineStack gap="300" blockAlign="center">
-          {isSaving && <Text as="span" tone="subdued">保存中…（上传媒体到 CDN，可能需要几秒）</Text>}
+          {isSaving && <Text as="span" tone="subdued">Saving… (uploading media to CDN, may take a few seconds)</Text>}
           {saveResult?.ok && (
             <Text as="span" tone="success">
-              ✓ 已保存 {saveResult.count ?? saveResult.total ?? 0} 条
+              ✓ Saved {saveResult.count ?? saveResult.total ?? 0} item(s)
             </Text>
           )}
           <Button
@@ -575,7 +575,7 @@ function Section({ title, source, pool, visible, products, saver }) {
 
                 {isChecked && (
                   <>
-                    <Checkbox label="Featured（精选，前台置顶显示）" checked={isFeatured} onChange={(v) => changeFeatured(item.id, v)} />
+                    <Checkbox label="Featured (pinned to top on storefront)" checked={isFeatured} onChange={(v) => changeFeatured(item.id, v)} />
                     <Select label="Category" options={CATEGORY_OPTIONS} value={category} onChange={(v) => changeCategory(item.id, v)} />
                     <Select
                       label="Linked Product"
