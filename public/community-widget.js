@@ -223,7 +223,7 @@
 @media (max-width:700px){
   .ac-community .ac-shell{padding:0 20px;}
   .ac-community .ac-amb-rail{grid-template-columns:1fr;}
-  .ac-community .ac-masonry{column-count:1;}
+  .ac-community .ac-masonry{column-count:2;}
   .ac-community .ac-tab{font-size:16px;padding:14px 14px 16px;}
 }
 `;
