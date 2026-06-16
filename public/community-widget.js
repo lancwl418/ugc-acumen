@@ -177,7 +177,7 @@
 .ac-community .ac-amb-chip svg{width:12px;height:12px;}
 
 /* Photo masonry */
-.ac-community .ac-masonry{column-count:3;column-gap:24px;}
+.ac-community .ac-masonry{column-count:4;column-gap:24px;}
 .ac-community .ac-p-card{break-inside:avoid;margin-bottom:24px;background:var(--bg-card);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;transition:transform .2s ease,box-shadow .2s ease;}
 .ac-community .ac-p-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);}
 .ac-community .ac-p-img{position:relative;background:var(--bg-soft);}
