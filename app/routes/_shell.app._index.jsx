@@ -71,18 +71,6 @@ export default function HomeIndex() {
               </BlockStack>
             </Card>
           </a>
-
-          {/* My Posts */}
-          <a href="/admin/ugc" data-prefetch="intent" style={{ textDecoration: "none" }}>
-            <Card padding="400">
-              <BlockStack gap="200">
-                <Text as="h3" variant="headingMd">My Posts</Text>
-                <Text as="p" tone="subdued">
-                  View and manage your own Instagram account posts.
-                </Text>
-              </BlockStack>
-            </Card>
-          </a>
         </div>
       </BlockStack>
     </Page>

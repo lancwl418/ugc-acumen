@@ -36,8 +36,6 @@ export default function ShellLayout() {
       { label: "Visible UGC", url: "/admin/visibleugc", match: /^\/admin\/visibleugc/ },
       { label: "UGC — Mentions (@)", url: "/admin/mentionsugc", match: /^\/admin\/mentionsugc/ },
       { label: "UGC — Creators", url: "/admin/creators", match: /^\/admin\/creators/ },
-      { label: "UGC — My Posts", url: "/admin/ugc", match: /^\/admin\/ugc/ },
-      
     ],
     []
   );
