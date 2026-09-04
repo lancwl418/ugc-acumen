@@ -4,7 +4,7 @@ import prisma from "../db.server.js";
 
 /** 查所有产品 */
 export async function getProducts() {
-  return prisma.product.findMany();
+  return prisma.product.findMany({ orderBy: { title: "asc" } });
 }
 
 /** DB row → API snake_case 对象 */

@@ -3,18 +3,19 @@ import { useLoaderData } from "@remix-run/react";
 import {
   Page, Card, Text, BlockStack, InlineStack, Tag, Badge,
 } from "@shopify/polaris";
-import { getAllVisible } from "../lib/visibleMentions.js";
+import { getAllVisible, getProducts } from "../lib/visibleMentions.js";
 
 const TINY =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
 export async function loader() {
-  const items = await getAllVisible();
-  return json({ items });
+  const [items, products] = await Promise.all([getAllVisible(), getProducts()]);
+  const productTitles = Object.fromEntries(products.map((p) => [p.handle, p.title]));
+  return json({ items, productTitles });
 }
 
 export default function VisibleUGCPage() {
-  const { items } = useLoaderData();
+  const { items, productTitles } = useLoaderData();
 
   return (
     <Page title={`Visible UGC — ${items.length} items`} backAction={{ url: "/" }}>
@@ -27,14 +28,15 @@ export default function VisibleUGCPage() {
         }}
       >
         {items.map((item) => (
-          <VisibleCard key={item.id} item={item} />
+          <VisibleCard key={item.id} item={item} productTitles={productTitles} />
         ))}
       </div>
     </Page>
   );
 }
 
-function VisibleCard({ item }) {
+function VisibleCard({ item, productTitles }) {
+  const linked = Array.isArray(item.products) ? item.products : [];
   const isVideo = item.media_type === "VIDEO";
   const thumb = item.thumbnail_url || item.media_url || TINY;
 
@@ -87,10 +89,15 @@ function VisibleCard({ item }) {
               {item.comments_count} comments
             </Text>
           )}
-          {item.linkedProduct && (
-            <Badge tone="info">{item.linkedProduct}</Badge>
-          )}
         </InlineStack>
+
+        {linked.length > 0 && (
+          <InlineStack gap="100" wrap>
+            {linked.map((h) => (
+              <Badge key={h} tone="info">{productTitles?.[h] || h}</Badge>
+            ))}
+          </InlineStack>
+        )}
       </BlockStack>
     </Card>
   );

@@ -6,6 +6,7 @@ import {
 import {
   Page, Card, Text, Checkbox, Button, Select, Tag, InlineStack,
   BlockStack, SkeletonBodyText, Banner, Badge, TextField,
+  Combobox, Listbox, AutoSelection,
 } from "@shopify/polaris";
 import { Suspense, useMemo, useState, useEffect, useRef } from "react";
 import {
@@ -16,6 +17,7 @@ import {
   fetchPostByShortcode, shortcodeFromPermalink,
 } from "../lib/instagramAPI.js";
 import { r2PutObject } from "../lib/r2Client.server.js";
+import { syncProducts, describeError, PRODUCT_CATEGORY } from "../lib/shopifyProducts.server.js";
 
 const CATEGORY_OPTIONS = [
   { label: "Driving Safety", value: "driving" },
@@ -53,9 +55,18 @@ export async function loader({ request }) {
   if (!process.env.RAPIDAPI_KEY) envMissing.push("RAPIDAPI_KEY");
   if (!process.env.INSTAGRAM_USERNAME) envMissing.push("INSTAGRAM_USERNAME");
 
+  // Linked Products 选项：从 Shopify 同步指定分类（PRODUCT_CATEGORY）的产品到
+  // Product 表（带 TTL）。同步失败则退回读表，并把错误显示在页面上。
+  let productsError = "";
   const [tagVisible, products] = await Promise.all([
     getAllVisible(),
-    getProducts(),
+    syncProducts()
+      .then((r) => r.products)
+      .catch(async (err) => {
+        console.error("[products] sync failed:", err);
+        productsError = describeError(err);
+        return getProducts();
+      }),
   ]);
 
   // No fetch timeout — let the FlashAPI mentions fetch run to completion so the
@@ -71,7 +82,7 @@ export async function loader({ request }) {
   })();
 
   return defer(
-    { tag: tagPromise, visible: tagVisible, products, envMissing },
+    { tag: tagPromise, visible: tagVisible, products, productsError, productCategory: PRODUCT_CATEGORY, envMissing },
     { headers: { "Cache-Control": "private, max-age=30" } }
   );
 }
@@ -94,6 +105,15 @@ export async function action({ request }) {
       return json({ ok: true, op: "fetchByLink", item });
     } catch (err) {
       return json({ ok: false, op: "fetchByLink", error: err?.message || "Fetch failed, please try again" });
+    }
+  }
+
+  if (op === "syncProducts") {
+    try {
+      const r = await syncProducts({ force: true });
+      return json({ ok: true, op: "syncProducts", count: r.products.length });
+    } catch (err) {
+      return json({ ok: false, op: "syncProducts", error: describeError(err) });
     }
   }
 
@@ -294,6 +314,14 @@ export default function AdminMentionsUGC() {
         </div>
       )}
 
+      <div style={{ marginTop: 12 }}>
+        <ProductsStatus
+          products={data.products}
+          error={data.productsError}
+          category={data.productCategory}
+        />
+      </div>
+
       <div style={{ marginTop: 16 }}>
         <ManualAdd visible={data.visible} products={data.products} />
       </div>
@@ -475,11 +503,11 @@ function Section({ title, source, pool, visible, products, saver }) {
       return n;
     });
 
-  const changeProducts = (id, handle) =>
+  const changeProducts = (id, handles) =>
     setSelected((prev) => {
       const n = new Map(prev);
       const it = n.get(String(id));
-      if (it) it.products = handle ? [handle] : [];
+      if (it) it.products = Array.isArray(handles) ? handles : [];
       return n;
     });
 
@@ -567,11 +595,10 @@ function Section({ title, source, pool, visible, products, saver }) {
                   <>
                     <Checkbox label="Featured (pinned to top on storefront)" checked={isFeatured} onChange={(v) => changeFeatured(item.id, v)} />
                     <Select label="Category" options={CATEGORY_OPTIONS} value={category} onChange={(v) => changeCategory(item.id, v)} />
-                    <Select
-                      label="Linked Product"
-                      options={Array.isArray(products) ? products.map((p) => ({ label: p.title, value: p.handle })) : []}
-                      value={chosenProducts[0] || ""}
-                      onChange={(v) => changeProducts(item.id, v)}
+                    <ProductMultiSelect
+                      products={products}
+                      value={chosenProducts}
+                      onChange={(handles) => changeProducts(item.id, handles)}
                     />
                     <input
                       type="hidden"
@@ -598,6 +625,106 @@ function Section({ title, source, pool, visible, products, saver }) {
         })}
       </div>
     </saver.Form>
+  );
+}
+
+/** 页面顶部：产品同步状态 + 手动同步按钮 */
+function ProductsStatus({ products, error, category }) {
+  const syncer = useFetcher();
+  const syncing = syncer.state !== "idle";
+  const result = syncer.state === "idle" ? syncer.data : null;
+  const count = Array.isArray(products) ? products.length : 0;
+
+  const button = (
+    <Button
+      size="slim"
+      loading={syncing}
+      disabled={syncing}
+      onClick={() => syncer.submit({ op: "syncProducts" }, { method: "post" })}
+    >
+      Sync products from Shopify
+    </Button>
+  );
+
+  if (error || (result && !result.ok)) {
+    return (
+      <Banner tone="warning" title={`Could not sync products from Shopify category “${category}”`}>
+        <BlockStack gap="200">
+          <p>{result && !result.ok ? result.error : error}</p>
+          <p>Showing {count} previously synced product(s).</p>
+          <div>{button}</div>
+        </BlockStack>
+      </Banner>
+    );
+  }
+
+  return (
+    <InlineStack gap="300" blockAlign="center">
+      <Text as="span" tone="subdued" variant="bodySm">
+        Linked Products: {count} product(s) from Shopify category “{category}”
+        {result?.ok ? ` · synced ${result.count}` : ""}
+      </Text>
+      {button}
+    </InlineStack>
+  );
+}
+
+/** 多选产品：Combobox 搜索 + Tag 展示已选 */
+function ProductMultiSelect({ products, value, onChange }) {
+  const [input, setInput] = useState("");
+  const list = Array.isArray(products) ? products : [];
+  const titleOf = (h) => list.find((p) => p.handle === h)?.title || h;
+  const selected = Array.isArray(value) ? value : [];
+
+  const q = input.trim().toLowerCase();
+  const options = q
+    ? list.filter((p) => p.title.toLowerCase().includes(q) || p.handle.includes(q))
+    : list;
+
+  const toggle = (handle) => {
+    if (selected.includes(handle)) onChange(selected.filter((h) => h !== handle));
+    else onChange([...selected, handle]);
+    setInput("");
+  };
+
+  return (
+    <BlockStack gap="150">
+      <Combobox
+        allowMultiple
+        activator={
+          <Combobox.TextField
+            label="Linked Products"
+            value={input}
+            onChange={setInput}
+            placeholder={list.length ? "Search products…" : "No products synced yet"}
+            autoComplete="off"
+            disabled={list.length === 0}
+          />
+        }
+      >
+        {options.length > 0 ? (
+          <Listbox autoSelection={AutoSelection.None} onSelect={toggle}>
+            {options.map((p) => (
+              <Listbox.Option
+                key={p.handle}
+                value={p.handle}
+                selected={selected.includes(p.handle)}
+                accessibilityLabel={p.title}
+              >
+                {p.title}
+              </Listbox.Option>
+            ))}
+          </Listbox>
+        ) : null}
+      </Combobox>
+      {selected.length > 0 && (
+        <InlineStack gap="100" wrap>
+          {selected.map((h) => (
+            <Tag key={h} onRemove={() => toggle(h)}>{titleOf(h)}</Tag>
+          ))}
+        </InlineStack>
+      )}
+    </BlockStack>
   );
 }
 
