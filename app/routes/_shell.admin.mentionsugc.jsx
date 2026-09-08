@@ -6,30 +6,20 @@ import {
 import {
   Page, Card, Text, Checkbox, Button, Select, Tag, InlineStack,
   BlockStack, SkeletonBodyText, Banner, Badge, TextField,
-  Combobox, Listbox, AutoSelection,
 } from "@shopify/polaris";
 import { Suspense, useMemo, useState, useEffect, useRef } from "react";
 import {
   getAllVisible, upsertManyVisible, replaceAllVisible, getProducts,
 } from "../lib/visibleMentions.js";
+import { parseEntry, ensureOnCDN, saveVisibleOne } from "../lib/visibleSave.server.js";
+import { CATEGORY_OPTIONS, TINY, ProductMultiSelect } from "../components/UgcFields.jsx";
 import {
   fetchTagUGCPage, refreshMediaUrlByTag, scanTagsUntil,
   fetchPostByShortcode, shortcodeFromPermalink,
 } from "../lib/instagramAPI.js";
-import { r2PutObject } from "../lib/r2Client.server.js";
 import { syncProducts, describeError, PRODUCT_CATEGORY } from "../lib/shopifyProducts.server.js";
 import { authenticate } from "../shopify.server.js";
 
-const CATEGORY_OPTIONS = [
-  { label: "Driving Safety", value: "driving" },
-  { label: "Towing & Camping", value: "towing" },
-  { label: "Off-road & Overland", value: "offroad" },
-  { label: "Fleet & Commercial", value: "fleet" },
-  { label: "UTV & Utility", value: "utv" },
-  { label: "Marine Life", value: "marine" },
-];
-const TINY =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
 
 // readJsonSafe removed — now using Prisma DB
 function readStackSS(key){ try { const raw = sessionStorage.getItem(key); return raw ? JSON.parse(raw) : []; } catch { return []; } }
@@ -203,70 +193,18 @@ export async function action({ request }) {
     return json({ ok: true, op: "refreshVisible", refreshed: idSet.size, total: updated.length });
   }
 
+  // 单卡片保存：只写这一条。visible=0 → 从 VisibleMention 删除；
+  // visible=1 → 上传 R2 后 upsert（与整页 merge 保存同样的逻辑）。
+  if (op === "saveOne") {
+    const raw = fd.get("ugc_entry");
+    if (!raw) return json({ ok: false, op: "saveOne", error: "Missing entry" }, { status: 400 });
+    const visible = String(fd.get("visible") || "1") !== "0";
+    return json(await saveVisibleOne({ entry: raw, visible }));
+  }
+
   // ⬇️ 保存可见列表（含 featured）前：上传到 R2
   const mode = String(fd.get("mode") || "merge").toLowerCase();
-  const entries = fd.getAll("ugc_entry").map((s) => {
-    const e = JSON.parse(s);
-    return {
-      id: String(e.id),
-      category: e.category || "driving",
-      products: Array.isArray(e.products) ? e.products : [],
-      username: e.username || "",
-      timestamp: e.timestamp || "",
-      media_type: e.media_type || "IMAGE",
-      media_url: e.media_url || "",
-      thumbnail_url: e.thumbnail_url || "",
-      caption: e.caption || "",
-      permalink: e.permalink || "",
-      featured: !!e.featured,
-    };
-  });
-
-  const R2_BASE = (process.env.CF_R2_PUBLIC_BASE || "").replace(/\/+$/, "");
-  const onR2 = (u) => !!(R2_BASE && u && u.startsWith(R2_BASE + "/"));
-
-  // Download a remote URL and put it on R2; returns the public CDN url.
-  async function fetchToR2(url, keyNoExt, mediaTypeHint) {
-    const res = await fetch(url, { redirect: "follow" });
-    if (!res.ok) throw new Error(`fetch ${keyNoExt} failed: ${res.status}`);
-    const ct = res.headers.get("content-type") || "application/octet-stream";
-    const buf = Buffer.from(await res.arrayBuffer());
-    const ext = ct.includes("jpeg") ? "jpg"
-      : ct.includes("png") ? "png"
-      : ct.includes("webp") ? "webp"
-      : ct.includes("gif") ? "gif"
-      : ct.includes("mp4") ? "mp4"
-      : (mediaTypeHint === "VIDEO" ? "mp4" : "bin");
-    return r2PutObject(`${keyNoExt}.${ext}`, buf, ct);
-  }
-
-  async function ensureOnCDN(e) {
-    const dir = `mentions/${e.username || "author"}`;
-    const out = { ...e };
-
-    // 1) Main media → R2 (skip if already there).
-    if (out.media_url && !onR2(out.media_url)) {
-      out.media_url = await fetchToR2(out.media_url, `${dir}/${e.id}`, e.media_type);
-    }
-
-    // 2) Thumbnail → R2. Instagram thumbnail URLs expire, so never persist a
-    //    non-R2 thumbnail. For images the R2 media doubles as the thumbnail;
-    //    for videos upload the poster separately, dropping it if it's dead.
-    if (e.media_type === "VIDEO") {
-      if (out.thumbnail_url && !onR2(out.thumbnail_url)) {
-        try {
-          out.thumbnail_url = await fetchToR2(out.thumbnail_url, `${dir}/${e.id}-poster`, "IMAGE");
-        } catch (err) {
-          console.error("R2 poster upload failed:", e.id, err?.message || err);
-          out.thumbnail_url = null;
-        }
-      }
-    } else {
-      out.thumbnail_url = onR2(out.thumbnail_url) ? out.thumbnail_url : out.media_url;
-    }
-
-    return out;
-  }
+  const entries = fd.getAll("ugc_entry").map(parseEntry);
 
   const uploaded = [];
   for (const it of entries) {
@@ -492,6 +430,72 @@ function Section({ title, source, pool, visible, products, saver }) {
   const isSaving = saver.state !== "idle";
   const saveResult = saver.state === "idle" ? saver.data : null;
 
+  // ── 单卡片保存 ──
+  // baseline：每个 id 上次保存成功时的快照（未勾选 = 无记录），用来判断卡片是否有未保存改动。
+  const snap = (p) => (p ? JSON.stringify({
+    category: p.category || "driving",
+    products: Array.isArray(p.products) ? p.products : [],
+    featured: !!p.featured,
+  }) : "");
+  const [baseline, setBaseline] = useState(() => {
+    const m = new Map();
+    initialSelected.forEach((v, k) => m.set(k, snap(v)));
+    return m;
+  });
+  const cardSaver = useFetcher();
+  const pendingRef = useRef(null); // { id, snap }
+  const [lastSaved, setLastSaved] = useState(null); // { id, ok, error }
+  const cardSaving = cardSaver.state !== "idle";
+
+  useEffect(() => {
+    if (cardSaver.state !== "idle" || !cardSaver.data || cardSaver.data.op !== "saveOne") return;
+    const d = cardSaver.data;
+    const pending = pendingRef.current;
+    if (d.ok && pending && pending.id === d.id) {
+      setBaseline((prev) => {
+        const n = new Map(prev);
+        if (d.visible) n.set(d.id, pending.snap); else n.delete(d.id);
+        return n;
+      });
+    }
+    setLastSaved({ id: d.id, ok: !!d.ok, error: d.error || "" });
+    pendingRef.current = null;
+  }, [cardSaver.state, cardSaver.data]);
+
+  // 整页保存成功后，所有勾选项都视为已保存。
+  useEffect(() => {
+    if (!saveResult?.ok || saveResult.op) return;
+    setBaseline(() => {
+      const m = new Map();
+      selected.forEach((v, k) => m.set(k, snap(v)));
+      return m;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saveResult]);
+
+  const saveOne = (item, picked) => {
+    const id = String(item.id);
+    const entry = picked ? {
+      id: item.id,
+      category: picked.category || "driving",
+      products: picked.products || [],
+      username: item.username,
+      timestamp: item.timestamp,
+      media_type: item.media_type,
+      media_url: item.media_url,
+      thumbnail_url: item.thumbnail_url,
+      caption: item.caption,
+      permalink: item.permalink,
+      featured: !!picked.featured,
+    } : { id: item.id, username: item.username };
+    pendingRef.current = { id, snap: snap(picked) };
+    setLastSaved(null);
+    cardSaver.submit(
+      { op: "saveOne", visible: picked ? "1" : "0", ugc_entry: JSON.stringify(entry) },
+      { method: "post" },
+    );
+  };
+
   const toggle = (id, seed) =>
     setSelected((prev) => {
       const n = new Map(prev);
@@ -560,6 +564,10 @@ function Section({ title, source, pool, visible, products, saver }) {
           const chosenProducts = picked?.products || [];
           const isFeatured = !!picked?.featured;
           const thumb = item.thumbnail_url || item.media_url || TINY;
+          const idStr = String(item.id);
+          const dirty = snap(picked) !== (baseline.get(idStr) || "");
+          const thisSaving = cardSaving && pendingRef.current?.id === idStr;
+          const thisResult = lastSaved?.id === idStr ? lastSaved : null;
 
           return (
             <Card key={`tag-${item.id}`} padding="400">
@@ -625,6 +633,27 @@ function Section({ title, source, pool, visible, products, saver }) {
                     />
                   </>
                 )}
+
+                <InlineStack gap="200" blockAlign="center">
+                  <Button
+                    size="slim"
+                    variant={dirty ? "primary" : "secondary"}
+                    loading={thisSaving}
+                    disabled={!dirty || cardSaving || isSaving}
+                    onClick={() => saveOne(item, picked)}
+                  >
+                    {isChecked ? "Save this post" : "Remove from site"}
+                  </Button>
+                  {dirty && !thisSaving && (
+                    <Text as="span" variant="bodySm" tone="caution">Unsaved changes</Text>
+                  )}
+                  {!dirty && thisResult?.ok && (
+                    <Text as="span" variant="bodySm" tone="success">✓ Saved</Text>
+                  )}
+                  {thisResult && !thisResult.ok && (
+                    <Text as="span" variant="bodySm" tone="critical">{thisResult.error || "Save failed"}</Text>
+                  )}
+                </InlineStack>
               </BlockStack>
             </Card>
           );
@@ -675,64 +704,6 @@ function ProductsStatus({ products, error, category }) {
   );
 }
 
-/** 多选产品：Combobox 搜索 + Tag 展示已选 */
-function ProductMultiSelect({ products, value, onChange }) {
-  const [input, setInput] = useState("");
-  const list = Array.isArray(products) ? products : [];
-  const titleOf = (h) => list.find((p) => p.handle === h)?.title || h;
-  const selected = Array.isArray(value) ? value : [];
-
-  const q = input.trim().toLowerCase();
-  const options = q
-    ? list.filter((p) => p.title.toLowerCase().includes(q) || p.handle.includes(q))
-    : list;
-
-  const toggle = (handle) => {
-    if (selected.includes(handle)) onChange(selected.filter((h) => h !== handle));
-    else onChange([...selected, handle]);
-    setInput("");
-  };
-
-  return (
-    <BlockStack gap="150">
-      <Combobox
-        allowMultiple
-        activator={
-          <Combobox.TextField
-            label="Linked Products"
-            value={input}
-            onChange={setInput}
-            placeholder={list.length ? "Search products…" : "No products synced yet"}
-            autoComplete="off"
-            disabled={list.length === 0}
-          />
-        }
-      >
-        {options.length > 0 ? (
-          <Listbox autoSelection={AutoSelection.None} onSelect={toggle}>
-            {options.map((p) => (
-              <Listbox.Option
-                key={p.handle}
-                value={p.handle}
-                selected={selected.includes(p.handle)}
-                accessibilityLabel={p.title}
-              >
-                {p.title}
-              </Listbox.Option>
-            ))}
-          </Listbox>
-        ) : null}
-      </Combobox>
-      {selected.length > 0 && (
-        <InlineStack gap="100" wrap>
-          {selected.map((h) => (
-            <Tag key={h} onRemove={() => toggle(h)}>{titleOf(h)}</Tag>
-          ))}
-        </InlineStack>
-      )}
-    </BlockStack>
-  );
-}
 
 function GridSkeleton() {
   return (

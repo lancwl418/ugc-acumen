@@ -105,6 +105,12 @@ export async function upsertVisible(entry) {
   });
 }
 
+/** 删除单条（不存在时静默） */
+export async function deleteVisible(id) {
+  const r = await prisma.visibleMention.deleteMany({ where: { id: String(id) } });
+  return r.count;
+}
+
 /** 批量 upsert（事务） */
 export async function upsertManyVisible(entries) {
   return prisma.$transaction(
