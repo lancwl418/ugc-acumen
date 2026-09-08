@@ -190,6 +190,25 @@
 .ac-community .ac-p-foot{display:flex;align-items:center;gap:10px;padding:12px 18px 16px;color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);}
 .ac-community .ac-p-foot .ac-v-stats{margin-left:auto;color:var(--ink-soft);}
 
+/* Linked products strip (single = full-width chip, multiple = horizontal slider) */
+.ac-community .ac-p-products{position:relative;padding:0 18px 14px;}
+.ac-community .ac-p-products-track{display:flex;gap:8px;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;-ms-overflow-style:none;}
+.ac-community .ac-p-products-track::-webkit-scrollbar{display:none;}
+.ac-community .ac-prod{flex:0 0 auto;width:100%;scroll-snap-align:start;display:flex;align-items:center;gap:10px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg-card);color:inherit;text-decoration:none;min-width:0;transition:border-color .15s ease;}
+.ac-community .ac-prod:hover{border-color:var(--line-strong);}
+.ac-community .ac-p-products.is-multi .ac-prod{width:calc(100% - 28px);}
+.ac-community .ac-prod-img{flex:0 0 52px;width:52px;height:52px;border-radius:6px;background:var(--bg-soft);overflow:hidden;display:grid;place-items:center;}
+.ac-community .ac-prod-img img{width:100%;height:100%;object-fit:cover;display:block;}
+.ac-community .ac-prod-info{min-width:0;display:flex;flex-direction:column;gap:2px;}
+.ac-community .ac-prod-title{font-weight:700;font-size:12.5px;line-height:1.3;color:var(--ink);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.ac-community .ac-prod-price{font-size:12.5px;color:var(--ink-soft);font-weight:500;}
+.ac-community .ac-prod-nav{position:absolute;top:50%;transform:translateY(-50%);width:26px;height:26px;border-radius:50%;border:1px solid var(--line);background:rgba(255,255,255,.96);color:var(--ink);display:grid;place-items:center;box-shadow:var(--shadow-sm);cursor:pointer;padding:0;z-index:1;}
+.ac-community .ac-prod-nav:hover{border-color:var(--line-strong);}
+.ac-community .ac-prod-nav svg{width:12px;height:12px;}
+.ac-community .ac-prod-nav.prev{left:6px;}
+.ac-community .ac-prod-nav.next{right:6px;}
+.ac-community .ac-prod-nav[disabled]{opacity:.35;cursor:default;}
+
 /* Submit CTA */
 .ac-community .ac-submit-cta{margin-top:96px;padding:56px 48px;background:var(--navy);color:#fff;border-radius:var(--radius-lg);display:grid;grid-template-columns:1.4fr 1fr;gap:48px;align-items:center;}
 .ac-community .ac-submit-cta h2{font-weight:800;font-size:44px;line-height:1.08;margin:0;letter-spacing:-.02em;color:#fff;}
@@ -407,6 +426,91 @@
     return flat.length > n ? flat.slice(0, n - 1) + "…" : flat;
   }
 
+  function formatPrice(n) {
+    const v = Number(n) || 0;
+    return "$" + (Number.isInteger(v) ? String(v) : v.toFixed(2));
+  }
+
+  function chevronHTML(dir) {
+    return dir === "prev"
+      ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>`
+      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>`;
+  }
+
+  // Linked products strip: one product → single full-width chip;
+  // several → horizontal snap slider with prev/next arrows.
+  function productStripHTML(products) {
+    const list = Array.isArray(products) ? products.filter((x) => x && x.title) : [];
+    if (!list.length) return "";
+    const multi = list.length > 1;
+    const chips = list.map((pr) => {
+      const tag = pr.link ? "a" : "div";
+      const href = pr.link ? ` href="${escapeHTML(pr.link)}" target="_blank" rel="noopener"` : "";
+      return `
+        <${tag} class="ac-prod"${href} title="${escapeHTML(pr.title)}">
+          <span class="ac-prod-img">${pr.image ? `<img src="${escapeHTML(pr.image)}" loading="lazy" alt=""/>` : ""}</span>
+          <span class="ac-prod-info">
+            <span class="ac-prod-title">${escapeHTML(pr.title)}</span>
+            <span class="ac-prod-price">${escapeHTML(formatPrice(pr.price))}</span>
+          </span>
+        </${tag}>`;
+    }).join("");
+    const nav = multi
+      ? `<button type="button" class="ac-prod-nav prev" data-dir="-1" aria-label="Previous product" disabled>${chevronHTML("prev")}</button>
+         <button type="button" class="ac-prod-nav next" data-dir="1" aria-label="Next product">${chevronHTML("next")}</button>`
+      : "";
+    return `
+      <div class="ac-p-products${multi ? " is-multi" : ""}">
+        ${nav}
+        <div class="ac-p-products-track">${chips}</div>
+      </div>`;
+  }
+
+  // Small rAF tween instead of scrollTo({behavior:"smooth"}): Chrome drops
+  // smooth programmatic scrolls inside the multi-column masonry container.
+  function animateScrollLeft(elm, to, ms = 220) {
+    const from = elm.scrollLeft;
+    const delta = to - from;
+    if (!delta) return;
+    const t0 = performance.now();
+    const ease = (x) => 1 - Math.pow(1 - x, 3);
+    const tick = (now) => {
+      const k = Math.min(1, (now - t0) / ms);
+      elm.scrollLeft = from + delta * ease(k);
+      if (k < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
+  // Slider arrows: delegated so it works for cards rendered via innerHTML.
+  function bindProductSliders(root) {
+    root.addEventListener("click", (ev) => {
+      const btn = ev.target.closest(".ac-prod-nav");
+      if (!btn || !root.contains(btn)) return;
+      ev.preventDefault();
+      const track = btn.parentElement.querySelector(".ac-p-products-track");
+      if (!track) return;
+      const chips = track.querySelectorAll(".ac-prod");
+      if (!chips.length) return;
+      // Snap-aligned: jump to the exact offset of the next/previous chip so
+      // scroll-snap doesn't pull us back to where we started.
+      const step = chips.length > 1 ? chips[1].offsetLeft - chips[0].offsetLeft : track.clientWidth;
+      const cur = Math.round(track.scrollLeft / step);
+      const idx = Math.max(0, Math.min(chips.length - 1, cur + Number(btn.dataset.dir || 1)));
+      animateScrollLeft(track, idx * step);
+    });
+    root.addEventListener("scroll", (ev) => {
+      const track = ev.target;
+      if (!(track instanceof Element) || !track.classList.contains("ac-p-products-track")) return;
+      const box = track.parentElement;
+      const prev = box.querySelector(".ac-prod-nav.prev");
+      const next = box.querySelector(".ac-prod-nav.next");
+      const max = track.scrollWidth - track.clientWidth - 1;
+      if (prev) prev.disabled = track.scrollLeft <= 0;
+      if (next) next.disabled = track.scrollLeft >= max;
+    }, true);
+  }
+
   // ─── Render: Posts view (photo cards) ───────────────────
   function postCardHTML(p) {
     const ambHTML = p.is_ambassador ? ambassadorChipHTML() : "";
@@ -424,6 +528,7 @@
           <h3 class="ac-p-title">${escapeHTML(truncate(p.caption || "Untitled post", 80))}</h3>
           ${p.caption ? `<p class="ac-p-excerpt">${escapeHTML(truncate(p.caption, 200))}</p>` : ""}
         </div>
+        ${productStripHTML(p.linked_products)}
         <div class="ac-p-foot">
           <span class="ac-avatar">${p.profile_pic_url
             ? `<img src="${escapeHTML(p.profile_pic_url)}" alt=""/>`
@@ -572,6 +677,7 @@
     state.mount = mount;
     injectFontLink();
     injectStyles();
+    bindProductSliders(mount);
     render();      // shows loading
     loadData();
   }

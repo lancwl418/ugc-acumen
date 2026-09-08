@@ -39,17 +39,36 @@ export async function loader({ request }) {
     category: scenario ? scenario : { in: [...SCENARIO_IDS] },
   };
 
-  const [rows, creatorLinks, totalAll, mentionCount] = await Promise.all([
+  const [rows, creatorLinks, productRows, totalAll, mentionCount] = await Promise.all([
     prisma.visibleMention.findMany({
       where: baseWhere,
       orderBy: [{ featured: "desc" }, { timestamp: "desc" }],
     }),
     getAllCreatorLinks(),
+    prisma.product.findMany(),
     prisma.visibleMention.count({
       where: { mediaType: { not: "VIDEO" }, category: { in: [...SCENARIO_IDS] } },
     }),
     prisma.mention.count({ where: { mediaType: { not: "VIDEO" } } }),
   ]);
+
+  // Linked products: VisibleMention.products stores Shopify handles (array;
+  // older rows may hold a single handle string). Resolve them against the
+  // synced Product table so the widget can render title / image / price.
+  const productByHandle = Object.fromEntries(productRows.map((p) => [p.handle, p]));
+  const resolveProducts = (raw) => {
+    const handles = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    return handles
+      .map((h) => productByHandle[h])
+      .filter(Boolean)
+      .map((p) => ({
+        handle: p.handle,
+        title: p.title,
+        image: p.image || null,
+        link: p.link || null,
+        price: p.price ?? 0,
+      }));
+  };
 
   const items = rows.map((row) => {
     const api = toAPI(row);
@@ -58,6 +77,7 @@ export async function loader({ request }) {
     api.ambassador_role = link?.role || null;
     api.display_name = link?.displayName || null;
     api.profile_pic_url = link?.profilePicUrl || null;
+    api.linked_products = resolveProducts(api.products);
     return api;
   });
 
