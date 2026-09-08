@@ -18,6 +18,7 @@ import {
 } from "../lib/instagramAPI.js";
 import { r2PutObject } from "../lib/r2Client.server.js";
 import { syncProducts, describeError, PRODUCT_CATEGORY } from "../lib/shopifyProducts.server.js";
+import { authenticate } from "../shopify.server.js";
 
 const CATEGORY_OPTIONS = [
   { label: "Driving Safety", value: "driving" },
@@ -46,6 +47,10 @@ function sortFeaturedThenTime(list = []) {
 }
 
 export async function loader({ request }) {
+  // 用嵌入式 token exchange 拿 Admin client（同时会把离线 session 写进 Session 表），
+  // 产品同步直接用它，不再依赖 Session 表里已有的离线 token。
+  const { admin } = await authenticate.admin(request);
+
   const url = new URL(request.url);
   const tSize = Math.min(40, Math.max(6, Number(url.searchParams.get("tSize") || 12)));
   const tAfter = url.searchParams.get("tAfter") || "";
@@ -60,7 +65,7 @@ export async function loader({ request }) {
   let productsError = "";
   const [tagVisible, products] = await Promise.all([
     getAllVisible(),
-    syncProducts()
+    syncProducts({ admin })
       .then((r) => r.products)
       .catch(async (err) => {
         console.error("[products] sync failed:", err);
@@ -88,6 +93,7 @@ export async function loader({ request }) {
 }
 
 export async function action({ request }) {
+  const { admin } = await authenticate.admin(request);
   const fd = await request.formData();
   const op = fd.get("op");
 
@@ -110,7 +116,7 @@ export async function action({ request }) {
 
   if (op === "syncProducts") {
     try {
-      const r = await syncProducts({ force: true });
+      const r = await syncProducts({ force: true, admin });
       return json({ ok: true, op: "syncProducts", count: r.products.length });
     } catch (err) {
       return json({ ok: false, op: "syncProducts", error: describeError(err) });

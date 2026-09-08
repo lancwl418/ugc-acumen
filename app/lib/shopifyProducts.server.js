@@ -82,18 +82,22 @@ export async function fetchCategoryProducts(admin, category = PRODUCT_CATEGORY) 
 
 /**
  * 同步分类产品到 Product 表（全量替换）。
+ * - `admin`：可选，传入 authenticate.admin(request) 返回的 admin client。
  * - 默认带 TTL，页面加载时调用不会每次都打 Shopify。
  * - 分类下一个产品都匹配不到时不清空旧数据，避免分类名写错把表清空。
  */
-export async function syncProducts({ force = false } = {}) {
+export async function syncProducts({ force = false, admin = null } = {}) {
   if (!force && Date.now() - lastSyncAt < SYNC_TTL) {
     return { synced: false, products: await prisma.product.findMany({ orderBy: { title: "asc" } }) };
   }
 
-  const shop = await getShopDomain();
-  if (!shop) throw new Error("No Shopify offline session found. Reinstall / reopen the app once.");
-
-  const { admin } = await unauthenticated.admin(shop);
+  // 优先使用调用方通过 authenticate.admin(request) 拿到的 Admin client；
+  // 没有的话再退回到离线 session（需要 Session 表里存在离线 token）。
+  if (!admin) {
+    const shop = await getShopDomain();
+    if (!shop) throw new Error("No Shopify offline session found. Reinstall / reopen the app once.");
+    ({ admin } = await unauthenticated.admin(shop));
+  }
   const list = await fetchCategoryProducts(admin, PRODUCT_CATEGORY);
   if (list.length === 0) {
     throw new Error(
