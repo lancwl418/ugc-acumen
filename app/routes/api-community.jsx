@@ -1,7 +1,10 @@
 // app/routes/api-community.jsx
-// Public API: Community page data — non-video VisibleMention posts grouped /
+// Public API: Community page data — curated VisibleMention items grouped /
 // filtered by scenario, plus aggregate stats for the hero.
-// Videos are excluded by design (storefront page is photo-only for v1).
+//   posts  → IMAGE / CAROUSEL_ALBUM items (photo masonry)
+//   videos → VIDEO items (video masonry; media_url is the R2 mp4,
+//            thumbnail_url the poster). Split so the storefront can render
+//            the two media tabs without re-filtering.
 import { json } from "@remix-run/node";
 import prisma from "../db.server.js";
 import { toAPI } from "../lib/visibleMentions.js";
@@ -33,9 +36,8 @@ export async function loader({ request }) {
   const scenarioParam = url.searchParams.get("scenario");
   const scenario = scenarioParam && SCENARIO_IDS.has(scenarioParam) ? scenarioParam : null;
 
-  // Exclude VIDEO media. Instagram posts are IMAGE, CAROUSEL_ALBUM, or VIDEO.
+  // Instagram posts are IMAGE, CAROUSEL_ALBUM, or VIDEO — all included.
   const baseWhere = {
-    mediaType: { not: "VIDEO" },
     category: scenario ? scenario : { in: [...SCENARIO_IDS] },
   };
 
@@ -47,9 +49,9 @@ export async function loader({ request }) {
     getAllCreatorLinks(),
     prisma.product.findMany(),
     prisma.visibleMention.count({
-      where: { mediaType: { not: "VIDEO" }, category: { in: [...SCENARIO_IDS] } },
+      where: { category: { in: [...SCENARIO_IDS] } },
     }),
-    prisma.mention.count({ where: { mediaType: { not: "VIDEO" } } }),
+    prisma.mention.count(),
   ]);
 
   // Linked products: VisibleMention.products stores Shopify handles (array;
@@ -81,25 +83,34 @@ export async function loader({ request }) {
     return api;
   });
 
+  const isVideo = (p) => p.media_type === "VIDEO";
+  const posts = items.filter((p) => !isVideo(p));
+  const videos = items.filter(isVideo);
+
   const byScenario = {};
   for (const s of SCENARIOS) {
     byScenario[s.id] = {
       label: s.label,
-      posts: items.filter((p) => p.category === s.id),
+      posts: posts.filter((p) => p.category === s.id),
+      videos: videos.filter((p) => p.category === s.id),
     };
   }
 
   const counts = {};
   for (const s of SCENARIOS) {
-    counts[s.id] = { posts: byScenario[s.id].posts.length };
+    counts[s.id] = {
+      posts: byScenario[s.id].posts.length,
+      videos: byScenario[s.id].videos.length,
+    };
   }
-  counts.all = { posts: items.length };
+  counts.all = { posts: posts.length, videos: videos.length };
 
   return json(
     {
       scenarios: SCENARIOS,
       counts,
-      posts: items,
+      posts,
+      videos,
       by_scenario: byScenario,
       stats: {
         total_curated: totalAll,
